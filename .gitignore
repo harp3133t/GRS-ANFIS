@@ -1,0 +1,36 @@
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.cache/
+.agents/
+.codex/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Data snapshots are managed outside git
+data/*
+!data/.gitkeep
+!data/README.md
+!data/openml_cache/
+data/openml_cache/*
+!data/openml_cache/.gitkeep
+
+# Model checkpoints and serialized estimators
+hyper_parameter/cv_weights/*
+!hyper_parameter/cv_weights/.gitkeep
+hyper_parameter/manual_bcwd_runs/
+*.pt
+*.pth
+*.joblib
+
+# Generated experiment outputs
+output/*
+!output/.gitkeep
+outputs/*
+!outputs/.gitkeep

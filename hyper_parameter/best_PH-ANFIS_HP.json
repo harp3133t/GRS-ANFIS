@@ -1,0 +1,110 @@
+{
+  "Breast_Cancer_Wisconsin_(Original)": {
+    "avg": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 16,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "avg",
+      "seed_offset": 101
+    },
+    "stacked": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 16,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "stacked",
+      "seed_offset": 211
+    },
+    "weight_available": false,
+    "source": {
+      "from": "main_code_ah.py::PARALLEL_HIER_PARAMS_BY_DATASET",
+      "variant_from": "main_code_ah.py::PARALLEL_HIER_VARIANTS"
+    }
+  },
+  "Vowel": {
+    "avg": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 18,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "avg",
+      "seed_offset": 101
+    },
+    "stacked": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 18,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "stacked",
+      "seed_offset": 211
+    },
+    "weight_available": false,
+    "source": {
+      "from": "main_code_ah.py::PARALLEL_HIER_PARAMS_BY_DATASET",
+      "variant_from": "main_code_ah.py::PARALLEL_HIER_VARIANTS"
+    }
+  },
+  "Spambase": {
+    "avg": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 20,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "avg",
+      "seed_offset": 101
+    },
+    "stacked": {
+      "lr": 0.05,
+      "epochs": 80,
+      "branch_rules": 20,
+      "top_rules": 8,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "stacked",
+      "seed_offset": 211
+    },
+    "weight_available": false,
+    "source": {
+      "from": "main_code_ah.py::PARALLEL_HIER_PARAMS_BY_DATASET",
+      "variant_from": "main_code_ah.py::PARALLEL_HIER_VARIANTS"
+    }
+  },
+  "Gisette": {
+    "avg": {
+      "lr": 0.03,
+      "epochs": 70,
+      "branch_rules": 14,
+      "top_rules": 6,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "avg",
+      "seed_offset": 101
+    },
+    "stacked": {
+      "lr": 0.03,
+      "epochs": 70,
+      "branch_rules": 14,
+      "top_rules": 6,
+      "mfs_per_input": 2,
+      "weight_decay": 1e-05,
+      "fusion": "stacked",
+      "seed_offset": 211
+    },
+    "weight_available": false,
+    "source": {
+      "from": "main_code_ah.py::PARALLEL_HIER_PARAMS_BY_DATASET",
+      "variant_from": "main_code_ah.py::PARALLEL_HIER_VARIANTS"
+    }
+  }
+}
