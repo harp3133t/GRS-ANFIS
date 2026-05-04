@@ -1,0 +1,5 @@
+dataset,grs_intrinsic,shap,lime,interpretation
+Breast Cancer,-0.0089,0.1630,0.0687,SHAP strongest under local perturbation
+Vowel,0.7333,0.8338,0.6611,"all methods respond, SHAP highest"
+Spambase,0.0693,0.1582,0.0065,"SHAP strongest, LIME weak"
+Gisette,0.00065,0.00065,-0.00001,deletion effect is negligible

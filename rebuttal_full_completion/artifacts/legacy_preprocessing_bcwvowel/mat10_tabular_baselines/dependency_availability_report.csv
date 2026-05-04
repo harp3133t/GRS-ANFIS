@@ -1,0 +1,6 @@
+package,import_name,available,version
+scikit-learn,sklearn,True,1.7.2
+xgboost,xgboost,True,3.2.0
+lightgbm,lightgbm,True,4.6.0
+catboost,catboost,True,1.2.10
+interpret,interpret,True,0.7.8

@@ -1,0 +1,71 @@
+{
+  "batch_size": 1024,
+  "dataset_meta": {
+    "Gisette": {
+      "hparams": {
+        "base_hard_epochs": 20,
+        "base_mask_threshold": null,
+        "base_rules": 7,
+        "enable_residual_branch": true,
+        "epochs_stage1": 30,
+        "epochs_stage2": 30,
+        "firing_mode": "htsk",
+        "lambda_base_hard": 0.0,
+        "lambda_base_s1": 0.01,
+        "lambda_resid_hard": 0.0,
+        "lambda_resid_s2": 0.001,
+        "lr_base": 0.01,
+        "lr_residual": 0.01,
+        "mf_per_feature": 2,
+        "random_role_assignment": false,
+        "residual_gate_mode": "complement",
+        "residual_hard_epochs": 10,
+        "residual_mask_threshold": null,
+        "residual_rules": 11,
+        "rule_init_mode": "balanced",
+        "rule_seed": 0,
+        "use_input_norm": false,
+        "weight_decay": 0.0001
+      },
+      "n_features": 5000,
+      "n_outputs": 1,
+      "n_samples": 6000,
+      "task_kind": "binary",
+      "total_epoch_budget": 90
+    }
+  },
+  "datasets_all_considered": [
+    "Breast_Cancer_Wisconsin_(Original)",
+    "Vowel",
+    "Spambase",
+    "Gisette"
+  ],
+  "datasets_requested": [
+    "Gisette"
+  ],
+  "device": "cpu",
+  "failures": [],
+  "folds": 5,
+  "issue": "MAT-7",
+  "max_folds": 1,
+  "n_boundary_rows": 8,
+  "n_epoch_rows": 270,
+  "numpy": "2.2.6",
+  "out_dir": "/home/harp3133t/multica_workspaces/527ef927-3a81-4acd-8816-b6be20fcb1f2/860808d6/workdir/artifacts/gisette_full_completion/mat7_sequential_gisette",
+  "pandas": "2.3.3",
+  "plot_paths": [
+    "/home/harp3133t/multica_workspaces/527ef927-3a81-4acd-8816-b6be20fcb1f2/860808d6/workdir/artifacts/gisette_full_completion/mat7_sequential_gisette/plots/Gisette_fold01_joint_no_freeze_loss.png",
+    "/home/harp3133t/multica_workspaces/527ef927-3a81-4acd-8816-b6be20fcb1f2/860808d6/workdir/artifacts/gisette_full_completion/mat7_sequential_gisette/plots/Gisette_fold01_sequential_freeze_loss.png",
+    "/home/harp3133t/multica_workspaces/527ef927-3a81-4acd-8816-b6be20fcb1f2/860808d6/workdir/artifacts/gisette_full_completion/mat7_sequential_gisette/plots/Gisette_fold01_stage1_unfreeze_refinement_loss.png"
+  ],
+  "project_root": "/home/harp3133t/Research/03_Research/GH-ANFIS_E404",
+  "python": "3.10.20",
+  "seed": 42,
+  "timestamp_utc": "2026-05-03T16:20:52.198387+00:00",
+  "torch": "2.11.0+cu130",
+  "variants": [
+    "sequential_freeze",
+    "joint_no_freeze",
+    "stage1_unfreeze_refinement"
+  ]
+}
