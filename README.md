@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GRS-ANFIS
 
 `notebooks/maincode_with_ph.ipynb`를 중심으로 다시 묶은 독립 실행용 프로젝트입니다.
@@ -56,3 +57,6 @@
 - boundary ablation은 노트북에서 `run_ablation(...)`으로 실행되며, 기본 설정은 `no_mi` 가중치와 `boundary_bin=1 (Q1)`입니다.
 - 노트북 기본 설정에서는 `summary_check`를 비활성화해 바로 실행되도록 했고, 필요하면 `summary_check_path`에 CSV 경로를 넣어 기존 결과와 비교할 수 있습니다.
 - 과거 실행 결과가 저장된 노트북 output cell에는 이전 입력 차원(예: BCWD 80)이 남아 있을 수 있습니다. 변경된 전처리 결과는 노트북을 다시 실행해 반영해야 합니다.
+=======
+# GRS-ANFIS
+>>>>>>> 6f8ef3e056fa67241e38cd015bd4796ae081b7c9
