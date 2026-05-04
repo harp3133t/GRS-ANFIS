@@ -946,9 +946,8 @@ class TSKANFIS(nn.Module):
 
 class ParallelHierarchicalTSKANFIS(nn.Module):
     """
-    MI로 선택된 입력을 2개 그룹으로 나눈 뒤 병렬 TSK-ANFIS를 통과시키는 계층형 구조.
-    - fusion='avg'    : 두 브랜치 출력을 학습 가능한 가중 평균으로 결합(1-layer parallel)
-    - fusion='stacked': 두 브랜치 출력을 상위 TSK-ANFIS로 결합(2-layer hierarchical)
+    H-ANFIS: MI로 선택된 입력을 2개 그룹으로 나눈 뒤 병렬 TSK-ANFIS를
+    통과시키고 두 브랜치 출력을 학습 가능한 가중 평균으로 결합합니다.
     """
 
     def __init__(
@@ -975,8 +974,8 @@ class ParallelHierarchicalTSKANFIS(nn.Module):
         self.branch_rules = int(branch_rules)
         self.top_rules = int(top_rules)
         self.fusion = str(fusion).strip().lower()
-        if self.fusion not in {"avg", "stacked"}:
-            raise ValueError("fusion must be one of {'avg', 'stacked'}")
+        if self.fusion != "avg":
+            raise ValueError("H-ANFIS supports only fusion='avg'.")
 
         self.group_a_idx, self.group_b_idx = self._normalize_groups(
             self.n_inputs, group_a_idx, group_b_idx
@@ -1012,20 +1011,7 @@ class ParallelHierarchicalTSKANFIS(nn.Module):
         )
 
         self.top_anfis = None
-        self.fusion_logits = None
-        if self.fusion == "avg":
-            self.fusion_logits = nn.Parameter(torch.zeros(self.n_outputs))
-        else:
-            self.top_anfis = TSKANFIS(
-                n_inputs=self.n_outputs * 2,
-                n_rules=self.top_rules,
-                n_outputs=self.n_outputs,
-                mfs_per_input=mfs_per_input,
-                eps=eps,
-                rule_init_mode=rule_init_mode,
-                rule_seed=int(rule_seed) + 907,
-                firing_mode=firing_mode,
-            )
+        self.fusion_logits = nn.Parameter(torch.zeros(self.n_outputs))
 
         # interpretability/complexity 루틴에서 모델 타입 식별용
         self.parallel_hierarchical_anfis = True
@@ -1090,13 +1076,9 @@ class ParallelHierarchicalTSKANFIS(nn.Module):
     def forward(self, x: torch.Tensor, return_activations: bool = False):
         y_a, y_b = self.forward_branches(x)
 
-        if self.fusion == "avg":
-            w = torch.sigmoid(self.fusion_logits).view(1, -1)
-            y = w * y_a + (1.0 - w) * y_b
-            top_input = torch.cat([y_a, y_b], dim=1)
-        else:
-            top_input = torch.cat([y_a, y_b], dim=1)
-            y = self.top_anfis(top_input)
+        w = torch.sigmoid(self.fusion_logits).view(1, -1)
+        y = w * y_a + (1.0 - w) * y_b
+        top_input = torch.cat([y_a, y_b], dim=1)
 
         if return_activations:
             activations = {

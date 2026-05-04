@@ -26,7 +26,7 @@ This repository contains the source code and public Jupyter notebooks used to re
 
 ## Notebooks
 
-- `notebooks/01_main_performance.ipynb`: main performance workflows, including the full main experiment and 5-fold BCWD/Vowel/GRS-ANFIS runs.
+- `notebooks/01_main_performance.ipynb`: main performance workflows, including the full main experiment and 5-fold BCWD/Vowel/GRS-ANFIS runs. H-ANFIS denotes the weighted-average hierarchical baseline.
 - `notebooks/02_additional_experiments.ipynb`: additional analyses, including complementary-boundary ablation, feature-count summaries, IF-THEN rule inspection, and BCWD interpretation cases.
 
 Both notebooks are committed without execution outputs so that the GitHub repository contains code only.
@@ -52,3 +52,4 @@ Then open one of the two notebooks and run the cells in order.
 - Hyperparameter JSON files under `hyper_parameter/` are versioned because they are experiment configuration, not generated results.
 - Generated summaries, checkpoints, figures, and reviewer-response tables are excluded from git.
 - If a notebook requires a dataset snapshot that is absent from `data/`, restore it locally before running the corresponding section.
+- BCWD is consistently preprocessed to 80 one-hot input features for ANFIS-family cross-validation experiments.

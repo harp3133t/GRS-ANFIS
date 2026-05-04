@@ -913,6 +913,10 @@ def fit_parallel_hier_anfis(
     feature_names=None,
     verbose=False,
 ):
+    fusion = str(fusion).strip().lower()
+    if fusion != "avg":
+        raise ValueError("H-ANFIS supports only fusion='avg'.")
+
     group_a, group_b = _make_random_feature_groups(n_features, split_seed)
     branch_rules = int(params.get("branch_rules", params.get("n_rules", 12)))
     top_rules = int(params.get("top_rules", max(2, branch_rules // 2)))
@@ -978,7 +982,7 @@ def fit_parallel_hier_anfis(
 
         if verbose and (epoch == 1 or epoch % 10 == 0 or epoch == epochs):
             avg = running / max(1, seen)
-            print(f"[PH-ANFIS/{fusion} {epoch:03d}] Loss={avg:.4f}")
+            print(f"[H-ANFIS {epoch:03d}] Loss={avg:.4f}")
 
     meta = {
         "group_a_idx": list(group_a),

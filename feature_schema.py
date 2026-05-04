@@ -79,9 +79,16 @@ def infer_feature_type(
         return "categorical"
 
     if pd.api.types.is_numeric_dtype(series.dtype):
-        if treat_int_as_categorical and pd.api.types.is_integer_dtype(series.dtype):
+        if treat_int_as_categorical:
             nunique = series.nunique(dropna=True)
-            if nunique <= max_categorical_unique:
+            values = pd.to_numeric(series.dropna(), errors="coerce")
+            values_np = values.to_numpy(dtype=float)
+            integer_like = (
+                values_np.size > 0
+                and np.isfinite(values_np).all()
+                and np.all(np.isclose(values_np, np.round(values_np)))
+            )
+            if integer_like and nunique <= max_categorical_unique:
                 return "categorical"
         return "numerical"
 
@@ -238,17 +245,19 @@ def one_hot_encode_for_anfis(
     max_categorical_unique: int = 20,
     treat_int_as_categorical: bool = False,
     include_missing_as_category: bool = True,
+    drop_first: bool = False,
     dtype: str = "float32",
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """ANFIS 입력을 위해 categorical을 숫자화합니다.
 
     기본 정책은 "진짜 categorical만 확장"입니다.
-    따라서 integer-valued ordinal / discrete numerical columns는
+    따라서 integer-like ordinal / discrete numerical columns는
     명시적으로 허용하지 않는 한 one-hot 대상이 아닙니다.
 
     - categorical && n_categories >= min_categories_for_ohe: one-hot
     - categorical && n_categories == 2: 0/1로 매핑
     - bool: 0/1
+    - drop_first=True: one-hot columns에서 기준 카테고리 1개 제거
 
     Returns:
         X_out: all-numeric DataFrame
@@ -325,6 +334,7 @@ def one_hot_encode_for_anfis(
             prefix=[str(c) for c in ohe_cols],
             prefix_sep="=",
             dtype=dtype,
+            drop_first=drop_first,
         )
         info["one_hot_columns"] = [str(c) for c in ohe_cols]
 

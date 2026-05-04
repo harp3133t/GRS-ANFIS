@@ -359,13 +359,17 @@ def _prepare_bcwd_frame(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
     X_raw.columns = BCWD_RAW_FEATURES
     X_raw = X_raw.replace("?", np.nan).replace(" ?", np.nan)
 
-    # Keep BCWD features numeric. Integer-valued ordinal scores must remain numeric
-    # under the categorical-only one-hot policy.
+    # Match the public BCWD loader: ordinal score columns become 80 drop-first one-hot inputs.
     for col in X_raw.columns:
         num = pd.to_numeric(X_raw[col], errors="coerce")
         X_raw[col] = num.astype(float)
 
-    X_prepared, _ = encode_inputs_for_anfis(X_raw)
+    X_prepared, _ = encode_inputs_for_anfis(
+        X_raw,
+        treat_int_as_categorical=True,
+        include_missing_as_category=False,
+        drop_first=True,
+    )
     X_prepared = coerce_numeric_frame(X_prepared)
 
     y = _coerce_target_binary(pd.Series(y_raw), dataset_name="Breast_Cancer_Wisconsin_(Original)")

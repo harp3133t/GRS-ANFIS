@@ -52,6 +52,20 @@ ANFIS_PREPROCESS_KWARGS = {
     "dtype": "float32",
 }
 
+BCWD_DATASET_NAMES = {
+    "Breast Cancer Wisconsin (Original)",
+    "Breast_Cancer_Wisconsin_(Original)",
+}
+
+DATASET_PREPROCESS_OVERRIDES = {
+    name: {
+        "treat_int_as_categorical": True,
+        "include_missing_as_category": False,
+        "drop_first": True,
+    }
+    for name in BCWD_DATASET_NAMES
+}
+
 
 def _local_snapshot_path(filename):
     if not filename:
@@ -157,7 +171,8 @@ def _finalize_dataset(
     X_df, feature_names = _ensure_dataframe(X_df, feature_names)
 
     if one_hot:
-        X_df, _ = encode_inputs_for_anfis(X_df)
+        preprocess_overrides = DATASET_PREPROCESS_OVERRIDES.get(str(name), {})
+        X_df, _ = encode_inputs_for_anfis(X_df, **preprocess_overrides)
         feature_names = list(X_df.columns)
 
     y, encoder, task_kind, n_outputs = prepare_targets(

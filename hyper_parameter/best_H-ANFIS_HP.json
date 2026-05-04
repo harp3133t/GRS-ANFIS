@@ -1,0 +1,62 @@
+{
+  "Breast_Cancer_Wisconsin_(Original)": {
+    "lr": 0.05,
+    "epochs": 80,
+    "branch_rules": 16,
+    "top_rules": 8,
+    "mfs_per_input": 2,
+    "weight_decay": 1e-05,
+    "fusion": "avg",
+    "seed_offset": 101,
+    "weight_available": false,
+    "source": {
+      "from": "notebooks::H_PARAMS_BY_DATASET",
+      "variant_from": "notebooks::H_VARIANTS"
+    }
+  },
+  "Vowel": {
+    "lr": 0.05,
+    "epochs": 80,
+    "branch_rules": 18,
+    "top_rules": 8,
+    "mfs_per_input": 2,
+    "weight_decay": 1e-05,
+    "fusion": "avg",
+    "seed_offset": 101,
+    "weight_available": false,
+    "source": {
+      "from": "notebooks::H_PARAMS_BY_DATASET",
+      "variant_from": "notebooks::H_VARIANTS"
+    }
+  },
+  "Spambase": {
+    "lr": 0.05,
+    "epochs": 80,
+    "branch_rules": 20,
+    "top_rules": 8,
+    "mfs_per_input": 2,
+    "weight_decay": 1e-05,
+    "fusion": "avg",
+    "seed_offset": 101,
+    "weight_available": false,
+    "source": {
+      "from": "notebooks::H_PARAMS_BY_DATASET",
+      "variant_from": "notebooks::H_VARIANTS"
+    }
+  },
+  "Gisette": {
+    "lr": 0.03,
+    "epochs": 70,
+    "branch_rules": 14,
+    "top_rules": 6,
+    "mfs_per_input": 2,
+    "weight_decay": 1e-05,
+    "fusion": "avg",
+    "seed_offset": 101,
+    "weight_available": false,
+    "source": {
+      "from": "notebooks::H_PARAMS_BY_DATASET",
+      "variant_from": "notebooks::H_VARIANTS"
+    }
+  }
+}
