@@ -1,5 +1,0 @@
-dataset,sequential_f1,joint_no_freeze_f1,stage1_unfreeze_f1,effective_overlap,claim_boundary
-Breast Cancer,0.9373,0.9171,0.9288,0.0,numeric schedule comparison
-Vowel,0.9708,0.9347,0.9696,0.0,numeric schedule comparison
-Spambase,0.9191,0.8045,0.9056,0.0,numeric schedule comparison
-Gisette,0.9732,0.9757,0.9784,0.0000,"numeric fixed-fold rerun; mixed result, so no universal sequential-superiority claim"

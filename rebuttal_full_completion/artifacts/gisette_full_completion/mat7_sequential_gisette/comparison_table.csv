@@ -1,4 +1,0 @@
-dataset,variant,final_val_loss_mean,final_val_acc_mean,final_val_f1_mean,stage2_or_refine_val_loss_delta_mean,primary_to_final_f1_delta_mean,primary_selected_mean,comp_selected_mean,mask_overlap_mean,rule_count_mean
-Gisette,stage1_unfreeze_refinement,0.1077564863115549,0.9783333333333334,0.978369384359401,0.00444205311437447,0.004310806953543245,2207.0,999.0,0.0,18.0
-Gisette,joint_no_freeze,0.11512271950642268,0.9758333333333333,0.9756507136859782,,,2128.0,1137.0,0.0,18.0
-Gisette,sequential_freeze,0.07956823714077473,0.9733333333333334,0.9732441471571907,0.0007598965118328777,4.4817173941114063e-05,2396.0,722.0,0.0,18.0

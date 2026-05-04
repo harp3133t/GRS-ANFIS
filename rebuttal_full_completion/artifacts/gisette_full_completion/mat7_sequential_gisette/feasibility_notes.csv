@@ -1,5 +1,0 @@
-dataset,status,n_samples,n_features_preprocessed,epoch_budget_per_variant,steps_per_epoch_approx,optimizer_steps_per_variant_approx,feature_steps_per_variant_approx,feature_steps_for_requested_scope_approx,reason
-Breast_Cancer_Wisconsin_(Original),not_run,699,9,170,1,170,1530,4590,deferred to feasibility note under CPU-only targeted evidence scope
-Vowel,not_run,990,26,170,1,170,4420,13260,deferred to feasibility note under CPU-only targeted evidence scope
-Spambase,not_run,4601,57,200,4,800,45600,136800,deferred to feasibility note under CPU-only targeted evidence scope
-Gisette,run,6000,5000,90,5,450,2250000,6750000,executed targeted curve run

@@ -1,5 +1,0 @@
-dataset,mask_stability,primary_coverage,complementary_coverage,top3_rule_agreement
-Breast Cancer,1.0000,1.0000,1.0000,0.9928
-Vowel,1.0000,1.0000,1.0000,0.9101
-Spambase,0.8490,0.6571,1.0000,0.9763
-Gisette,0.6011,1.0000,1.0000,0.9998

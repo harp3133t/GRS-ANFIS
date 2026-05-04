@@ -1,9 +1,0 @@
-dataset,mode,acc,f1,base_near_zero,comp_near_zero,comp_max_weight,comp_effective_rules,source
-Breast Cancer,HTSK,0.9557,0.9353,0.0000,0.0000,0.1032,10.94,MAT-9 product-vs-HTSK summary
-Breast Cancer,product,0.9657,0.9501,0.1354,0.0000,0.1482,10.16,MAT-9 product-vs-HTSK summary
-Gisette,HTSK,0.9733 +/- 0.0053,0.9733 +/- 0.0052,0.0000 +/- 0.0000,0.0000 +/- 0.0000,0.0914 +/- 0.0000,10.9999 +/- 0.0000,/home/harp3133t/Research/03_Research/GH-ANFIS_E404/rebuttal_full_completion/artifacts/gisette_full_completion/htsk_firing_vowel_gisette/reviewer_table.csv
-Gisette,prod,0.5000 +/- 0.0000,0.4444 +/- 0.3849,0.0000 +/- 0.0000,0.0000 +/- 0.0000,0.0909 +/- 0.0000,11.0000 +/- 0.0000,/home/harp3133t/Research/03_Research/GH-ANFIS_E404/rebuttal_full_completion/artifacts/gisette_full_completion/htsk_firing_vowel_gisette/reviewer_table.csv
-Spambase,HTSK,0.9287,0.9078,0.0000,0.0000,0.1514,10.15,MAT-9 product-vs-HTSK summary
-Spambase,product,0.9270,0.9056,0.0710,0.1218,0.4449,3.84,MAT-9 product-vs-HTSK summary
-Vowel,HTSK,0.9444 +/- 0.0156,0.9440 +/- 0.0159,0.0000 +/- 0.0000,0.0000 +/- 0.0000,0.0909 +/- 0.0000,11.0000 +/- 0.0000,/home/harp3133t/Research/03_Research/GH-ANFIS_E404/rebuttal_full_completion/artifacts/gisette_full_completion/htsk_firing_vowel_gisette/reviewer_table.csv
-Vowel,prod,0.9343 +/- 0.0126,0.9339 +/- 0.0128,0.0000 +/- 0.0000,0.0000 +/- 0.0000,0.0909 +/- 0.0000,11.0000 +/- 0.0000,/home/harp3133t/Research/03_Research/GH-ANFIS_E404/rebuttal_full_completion/artifacts/gisette_full_completion/htsk_firing_vowel_gisette/reviewer_table.csv

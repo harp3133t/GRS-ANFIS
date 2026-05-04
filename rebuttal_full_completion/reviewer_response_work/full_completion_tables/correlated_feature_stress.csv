@@ -1,5 +1,0 @@
-dataset,acc_delta,selected_delta,raw_jaccard,collapsed_jaccard,role_assignment_summary,scope
-Breast Cancer,0.0000,+3.2,0.8003,0.8207,"same 64%, single 24%, neither 12%",full dataset
-Vowel,+0.0091,+8.2,0.9102,0.8930,same 100%,full dataset
-Spambase,+0.0017,0.0,0.7412,0.7970,"same 28%, single 44%, neither 8%, split 20%",full dataset
-Gisette,0.0000,+5.2,0.8745,0.8732,"same 76%, single 4%, neither 20%",representative top-100 subset

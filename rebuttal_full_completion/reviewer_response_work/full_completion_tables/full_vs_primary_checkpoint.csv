@@ -1,5 +1,0 @@
-dataset,full_f1,primary_f1,delta,effective_overlap,source
-Breast Cancer,0.9630,0.9585,+0.0044,0.0,MAT-6 checkpoint attribution
-Vowel,0.9662,0.9651,+0.0011,0.0,MAT-6 checkpoint attribution
-Spambase,0.9136,0.9059,+0.0076,0.0,MAT-6 checkpoint attribution
-Gisette,0.9758,0.9755,+0.0003,0.0,MAT-6 checkpoint attribution

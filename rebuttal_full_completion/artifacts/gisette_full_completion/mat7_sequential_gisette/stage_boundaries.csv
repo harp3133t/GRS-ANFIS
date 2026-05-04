@@ -1,9 +1,0 @@
-dataset,fold,variant,epoch_global,stage,stage_boundary_marker,val_loss,val_acc,val_f1,primary_selected,comp_selected,mask_overlap,rule_count
-Gisette,1,sequential_freeze,1,Stage1 soft,Stage1 soft,0.16373681982358296,0.9483333333333334,0.9484193011647255,2260.0,2740.0,0.0,18.0
-Gisette,1,sequential_freeze,31,Primary hard,Primary hard,0.10584248033662637,0.97,0.9697478991596639,2396.0,2604.0,0.0,18.0
-Gisette,1,sequential_freeze,51,Stage2 soft,Stage2 soft,0.07898778947691122,0.9733333333333334,0.9732888146911519,2396.0,2064.0,0.0,18.0
-Gisette,1,sequential_freeze,81,Complementary hard,Complementary hard,0.08179487029711406,0.9741666666666666,0.9741019214703425,2396.0,722.0,0.0,18.0
-Gisette,1,joint_no_freeze,1,Joint no-freeze,Joint no-freeze start,0.16613386273384095,0.9483333333333334,0.9482470784641068,2220.0,1326.0,0.0,18.0
-Gisette,1,stage1_unfreeze_refinement,1,Stage1 soft,Stage1 soft,0.15921594589948654,0.9533333333333334,0.9531772575250836,2180.0,2820.0,0.0,18.0
-Gisette,1,stage1_unfreeze_refinement,31,Primary hard,Primary hard,0.0961886208007733,0.9683333333333334,0.9681208053691275,2409.0,2591.0,0.0,18.0
-Gisette,1,stage1_unfreeze_refinement,51,Unfreeze refinement,Unfreeze refinement,0.10331443319718044,0.9758333333333333,0.9757727652464494,2457.0,867.0,0.0,18.0

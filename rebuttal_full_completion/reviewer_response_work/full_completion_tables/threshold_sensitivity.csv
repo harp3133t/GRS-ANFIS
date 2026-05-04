@@ -1,5 +1,0 @@
-dataset,tau_0.3_f1,tau_0.4_f1,tau_0.5_f1,tau_0.6_f1,tau_0.7_f1,selected_at_0.5,mask_jaccard_at_0.5,source
-Breast Cancer,0.9415,0.9542,0.9524,0.9412,0.9267,75.8,0.9045,MAT-5 legacy/revision robustness summary
-Vowel,0.9394,0.9524,0.9606,0.9334,0.8868,21.0,0.7909,MAT-5 legacy/revision robustness summary
-Spambase,0.8842,0.9009,0.9120,0.8658,0.7941,48.0,0.8056,MAT-5 legacy/revision robustness summary
-Gisette,0.9757,0.9757,0.9758,0.6667,0.6667,2680.80,0.6011,/home/harp3133t/Research/03_Research/GH-ANFIS_E404/rebuttal_full_completion/artifacts/gisette_full_completion/mat5_threshold_sparsity_seed_rerun/tau_summary_by_dataset.csv

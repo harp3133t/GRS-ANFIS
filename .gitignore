@@ -13,24 +13,25 @@ __pycache__/
 venv/
 env/
 
-# Data snapshots are managed outside git
+# Datasets are not distributed with the public code release
 data/*
-!data/.gitkeep
 !data/README.md
-!data/openml_cache/
-data/openml_cache/*
-!data/openml_cache/.gitkeep
 
-# Model checkpoints and serialized estimators
-hyper_parameter/cv_weights/*
-!hyper_parameter/cv_weights/.gitkeep
+# Model checkpoints, serialized estimators, and generated result artifacts
+hyper_parameter/cv_weights/
 hyper_parameter/manual_bcwd_runs/
+hyper_parameter/*.csv
 *.pt
 *.pth
 *.joblib
 
-# Generated experiment outputs
-output/*
-!output/.gitkeep
-outputs/*
-!outputs/.gitkeep
+# Generated experiment outputs and rebuttal artifact bundles
+output/
+outputs/
+rebuttal_full_completion/
+
+# Keep only the two public notebooks in git
+notebooks/*.ipynb
+!notebooks/01_main_performance.ipynb
+!notebooks/02_additional_experiments.ipynb
+test.ipynb
