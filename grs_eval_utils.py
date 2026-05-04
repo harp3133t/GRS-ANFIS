@@ -26,21 +26,21 @@ def _supports_use_soft_eval(model):
     return False
 
 
-# GH-ANFIS Evaluation Helper Functions
+# GRS-ANFIS Evaluation Helper Functions
 """
-Helper functions to evaluate GH-ANFIS with Base/Residual/Combined metrics
+Helper functions to evaluate GRS-ANFIS with Primary/Complementary/Combined metrics
 """
 
-def evaluate_gh_anfis_detailed_classification(model, loader, criterion, device, task_kind):
+def evaluate_grs_anfis_detailed_classification(model, loader, criterion, device, task_kind):
     """
-    Evaluate GH-ANFIS separately for Base, Residual, and Combined
-    Returns: dict with keys 'base', 'residual', 'combined', each containing (acc, f1)
+    Evaluate GRS-ANFIS separately for Primary, Complementary, and Combined
+    Returns: dict with keys 'primary', 'complementary', 'combined', each containing (acc, f1)
     """
 
     results = {}
     
     # Evaluate each mode
-    for mode_name in ['base_only', 'residual_only', 'full']:
+    for mode_name in ['primary_only', 'complementary_only', 'full']:
         model.set_mode(mode_name)
         model.eval()
         
@@ -90,10 +90,10 @@ def evaluate_gh_anfis_detailed_classification(model, loader, criterion, device, 
     return results
 
 
-def evaluate_gh_anfis_detailed_regression(model, loader, device):
+def evaluate_grs_anfis_detailed_regression(model, loader, device):
     """
-    Evaluate GH-ANFIS separately for Base, Residual, and Combined
-    Returns: dict with keys 'base', 'residual', 'combined', each containing (mse, r2)
+    Evaluate GRS-ANFIS separately for Primary, Complementary, and Combined
+    Returns: dict with keys 'primary', 'complementary', 'combined', each containing (mse, r2)
     """
     from sklearn.metrics import mean_squared_error, r2_score
     import torch
@@ -102,7 +102,7 @@ def evaluate_gh_anfis_detailed_regression(model, loader, device):
     results = {}
     
     # Evaluate each mode
-    for mode_name in ['base_only', 'residual_only', 'full']:
+    for mode_name in ['primary_only', 'complementary_only', 'full']:
         model.set_mode(mode_name)
         model.eval()
         

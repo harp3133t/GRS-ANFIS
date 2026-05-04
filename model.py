@@ -1,4 +1,4 @@
-# 모델 구조(GH/TSK-ANFIS) 정의 모음
+# Model definitions for GRS/TSK-ANFIS
 import copy
 import math
 
@@ -19,7 +19,7 @@ def _estimate_rule_grid_size(num_features, num_mfs, limit=None):
 
 
 def _build_rule_mf_indices_legacy(num_rules, num_features, num_mfs, device):
-    """Legacy rule enumeration with base-M counting over feature slots."""
+    """Legacy rule enumeration with primary-M counting over feature slots."""
     num_rules = int(num_rules)
     num_features = int(num_features)
     num_mfs = int(num_mfs)
@@ -73,12 +73,12 @@ def _build_rule_mf_indices_balanced(num_rules, num_features, num_mfs, device, se
 
     indices = torch.empty(num_rules, num_features, dtype=torch.long)
     repeats = math.ceil(num_rules / num_mfs)
-    base_pattern = torch.arange(num_mfs, dtype=torch.long).repeat(repeats)[:num_rules]
+    primary_pattern = torch.arange(num_mfs, dtype=torch.long).repeat(repeats)[:num_rules]
 
     for d in range(num_features):
         perm = torch.randperm(num_rules, generator=generator)
         shift = int(torch.randint(0, num_mfs, (1,), generator=generator).item())
-        indices[:, d] = (base_pattern.index_select(0, perm) + shift) % num_mfs
+        indices[:, d] = (primary_pattern.index_select(0, perm) + shift) % num_mfs
 
     for _ in range(32):
         seen = set()
@@ -107,7 +107,7 @@ def _build_rule_mf_indices_balanced(num_rules, num_features, num_mfs, device, se
 def _build_rule_mf_indices(num_rules, num_features, num_mfs, device, mode="legacy", seed=0):
     """Build fixed TSK-style MF assignments per rule/feature."""
     mode = str(mode).strip().lower()
-    if mode in {"legacy", "biased", "base_m"}:
+    if mode in {"legacy", "biased", "primary_m"}:
         return _build_rule_mf_indices_legacy(num_rules, num_features, num_mfs, device)
     if mode in {"balanced", "balanced_random", "random"}:
         return _build_rule_mf_indices_balanced(
@@ -194,93 +194,93 @@ def _hard_mask_from_probs(mask_probs, threshold):
 
 
 
-class GH_ANFIS(nn.Module):
+class GRS_ANFIS(nn.Module):
     """
     - 각 변수마다 M개의 Gaussian MF (center, sigma)
-    - base / residual 두 개의 규칙 집합
-    - base(primary):
+    - primary / complementary 두 개의 규칙 집합
+    - primary:
         * soft stage: 후건부만 soft gate로 feature weight를 조절
         * hard stage: 전건부/후건부 모두 gate의 hard mask를 사용
-    - residual(complementary):
-        * base hard complement를 우선 사용
+    - complementary:
+        * primary hard complement를 우선 사용
         * soft stage: 후건부만 soft gate를 사용
         * hard stage: 전건부/후건부 모두 hard mask를 사용
     - phase에 따라 branch 관계를 다르게 설정:
-        * 'base'               : base만 사용, residual은 off
-        * 'residual_complement': residual은 base complement로만 사용
-        * 'joint'              : base + residual 모두 사용 (residual은 complement)
+        * 'primary'               : primary만 사용, complementary은 off
+        * 'complementary_complement': complementary은 primary complement로만 사용
+        * 'joint'              : primary + complementary 모두 사용 (complementary은 complement)
     - mode에 따라 출력 결합 방식 결정:
-        * 'full'          : y = y_base + y_residual
-        * 'base_only'     : y = y_base
-        * 'residual_only' : y = y_residual
+        * 'full'          : y = y_primary + y_complementary
+        * 'primary_only'     : y = y_primary
+        * 'complementary_only' : y = y_complementary
     """
 
     def __init__(
         self,
         n_features,
         n_outputs,
-        residual_rules=8,
-        base_rules=4,
+        complementary_rules=8,
+        primary_rules=4,
         mf_per_feature=2,
         device=None,
         eps=1e-6,
-        residual_gate_mode="complement",
+        complementary_gate_mode="complement",
         rule_init_mode="balanced",
         rule_seed=0,
         firing_mode="htsk",
         use_input_norm=False,
-        enable_residual_branch=True,
+        enable_complementary_branch=True,
     ):
         super().__init__()
         self.device = device or torch.device("cpu")
         self.n_features = n_features
         self.n_outputs = n_outputs
 
-        self.residual_rules = residual_rules
-        self.base_rules = base_rules
+        self.complementary_rules = complementary_rules
+        self.primary_rules = primary_rules
         self.mf_per_feature = mf_per_feature
         self.eps = eps
         self.rule_init_mode = str(rule_init_mode).strip().lower()
         self.rule_seed = int(rule_seed)
         self.firing_mode = str(firing_mode).strip().lower()
         self.use_input_norm = bool(use_input_norm)
-        self.enable_residual_branch = bool(enable_residual_branch)
-        self.residual_gate_mode = str(residual_gate_mode).strip().lower()
-        if self.residual_gate_mode not in {"complement", "independent"}:
+        self.enable_complementary_branch = bool(enable_complementary_branch)
+        self.complementary_gate_mode = str(complementary_gate_mode).strip().lower()
+        if self.complementary_gate_mode not in {"complement", "independent"}:
             raise ValueError(
-                "residual_gate_mode must be one of {'complement', 'independent'}"
+                "complementary_gate_mode must be one of {'complement', 'independent'}"
             )
 
         # 출력 결합 모드
-        self.mode = "full"  # 'full' | 'base_only' | 'residual_only'
+        self.mode = "full"  # 'full' | 'primary_only' | 'complementary_only'
 
         # 학습 단계 / 게이트 관계 모드
-        self.phase = "joint"  # 'joint' | 'base' | 'residual_complement'
+        self.phase = "joint"  # 'joint' | 'primary' | 'complementary_complement'
 
         # 입력 정규화 (원하면 forward에서 self.norm(x)로 사용)
         self.norm = nn.BatchNorm1d(n_features)
 
-        # 전역(base) 마스크: soft 확률 → threshold로 hard 고정
-        self.base_mask_logits = nn.Parameter(torch.zeros(n_features, device=self.device))
+        # 전역(primary) 마스크: soft 확률 → threshold로 hard 고정
+        self.primary_mask_logits = nn.Parameter(torch.zeros(n_features, device=self.device))
         self.register_buffer(
-            "base_mask_hard", torch.zeros(n_features, device=self.device)
+            "primary_mask_hard", torch.zeros(n_features, device=self.device)
         )
-        self.base_mask_threshold = 0.5
-        self.base_mask_frozen = False
+        self.primary_mask_threshold = 0.5
+        self.primary_mask_frozen = False
 
-        # 전역(residual) 마스크: soft 확률 → threshold로 hard 고정
-        self.residual_mask_logits = nn.Parameter(torch.zeros(n_features, device=self.device))
+        # 전역(complementary) 마스크: soft 확률 → threshold로 hard 고정
+        self.complementary_mask_logits = nn.Parameter(torch.zeros(n_features, device=self.device))
         self.register_buffer(
-            "residual_mask_hard", torch.zeros(n_features, device=self.device)
+            "complementary_mask_hard", torch.zeros(n_features, device=self.device)
         )
-        self.residual_mask_threshold = 0.5
-        self.residual_mask_frozen = False
-        self.residual_use_complement = self.residual_gate_mode == "complement"
+        self.complementary_mask_threshold = 0.5
+        self.complementary_mask_frozen = False
+        self.complementary_use_complement = self.complementary_gate_mode == "complement"
 
         # MF / Rule / Consequent 초기화
-        self.residual_input_dim = self.n_features
-        self._init_residual(self.residual_input_dim, self.mf_per_feature)
-        self._init_base(self.n_features, self.mf_per_feature)
+        self.complementary_input_dim = self.n_features
+        self._init_complementary(self.complementary_input_dim, self.mf_per_feature)
+        self._init_primary(self.n_features, self.mf_per_feature)
 
 
         self.is_structured = True
@@ -288,13 +288,13 @@ class GH_ANFIS(nn.Module):
             "rule_init_mode": self.rule_init_mode,
             "rule_seed": self.rule_seed,
             "firing_mode": self.firing_mode,
-            "residual_gate_mode": self.residual_gate_mode,
+            "complementary_gate_mode": self.complementary_gate_mode,
             "use_input_norm": self.use_input_norm,
-            "enable_residual_branch": self.enable_residual_branch,
+            "enable_complementary_branch": self.enable_complementary_branch,
         }
 
-    # ───────── residual 초기화 ─────────
-    def _init_residual(self, D, M):
+    # ───────── complementary 초기화 ─────────
+    def _init_complementary(self, D, M):
         if M > 1:
             min_val, max_val = -1.5, 1.5
             centers = torch.linspace(min_val, max_val, M, device=self.device)
@@ -314,7 +314,7 @@ class GH_ANFIS(nn.Module):
         self.register_buffer(
             "p_rule_mf_indices",
             _build_rule_mf_indices(
-                self.residual_rules,
+                self.complementary_rules,
                 D,
                 M,
                 self.device,
@@ -328,15 +328,15 @@ class GH_ANFIS(nn.Module):
             _indices_to_compat_logits(self.p_rule_mf_indices, M),
         )
 
-        self.residual_consequents = nn.ModuleList(
-            [nn.Linear(D + 1, 1) for _ in range(self.residual_rules * self.n_outputs)]
+        self.complementary_consequents = nn.ModuleList(
+            [nn.Linear(D + 1, 1) for _ in range(self.complementary_rules * self.n_outputs)]
         )
         if self.device.type == "cuda":
-            for layer in self.residual_consequents:
+            for layer in self.complementary_consequents:
                 layer.to(self.device)
 
-    # ───────── base 초기화 ─────────
-    def _init_base(self, D, M):
+    # ───────── primary 초기화 ─────────
+    def _init_primary(self, D, M):
         if D > 0:
             if M > 1:
                 min_val, max_val = -1.5, 1.5
@@ -357,7 +357,7 @@ class GH_ANFIS(nn.Module):
             self.register_buffer(
                 "s_rule_mf_indices",
                 _build_rule_mf_indices(
-                    self.base_rules,
+                    self.primary_rules,
                     D,
                     M,
                     self.device,
@@ -371,24 +371,24 @@ class GH_ANFIS(nn.Module):
                 _indices_to_compat_logits(self.s_rule_mf_indices, M),
             )
 
-            self.base_consequents = nn.ModuleList(
-                [nn.Linear(D + 1, 1) for _ in range(self.base_rules * self.n_outputs)]
+            self.primary_consequents = nn.ModuleList(
+                [nn.Linear(D + 1, 1) for _ in range(self.primary_rules * self.n_outputs)]
             )
             if self.device.type == "cuda":
-                for layer in self.base_consequents:
+                for layer in self.primary_consequents:
                     layer.to(self.device)
         else:
             self.register_parameter("s_mf_centers", None)
             self.register_parameter("s_mf_log_sigmas", None)
             self.register_buffer(
                 "s_rule_mf_indices",
-                torch.zeros(self.base_rules, 0, dtype=torch.long, device=self.device),
+                torch.zeros(self.primary_rules, 0, dtype=torch.long, device=self.device),
                 persistent=False,
             )
             self.register_buffer(
                 "s_rule_mf_selector_logits",
                 torch.empty(
-                    self.base_rules,
+                    self.primary_rules,
                     0,
                     max(1, int(M)),
                     dtype=torch.float32,
@@ -396,7 +396,7 @@ class GH_ANFIS(nn.Module):
                 ),
                 persistent=False,
             )
-            self.base_consequents = None
+            self.primary_consequents = None
 
     def _resolve_gate_state(
         self,
@@ -559,124 +559,124 @@ class GH_ANFIS(nn.Module):
     # ───────── 모드 & freeze 유틸 ─────────
     def set_mode(self, mode: str):
         """
-        mode: 'full' | 'base_only' | 'residual_only'
+        mode: 'full' | 'primary_only' | 'complementary_only'
         - 'full'          : y = s_out + p_out
-        - 'base_only'     : y = s_out
-        - 'residual_only' : y = p_out
+        - 'primary_only'     : y = s_out
+        - 'complementary_only' : y = p_out
         """
-        assert mode in ["full", "base_only", "residual_only"]
+        assert mode in ["full", "primary_only", "complementary_only"]
         self.mode = mode
 
     def set_phase(self, phase: str):
         """
-        phase: 'joint' | 'base' | 'residual_complement'
-        - 'base'               : base만 사용, residual off
-        - 'residual_complement': residual은 base hard complement만 사용
-        - 'joint'              : base + residual 모두 사용 (residual은 complement)
+        phase: 'joint' | 'primary' | 'complementary_complement'
+        - 'primary'               : primary만 사용, complementary off
+        - 'complementary_complement': complementary은 primary hard complement만 사용
+        - 'joint'              : primary + complementary 모두 사용 (complementary은 complement)
         """
-        assert phase in ["joint", "base", "residual_complement"]
+        assert phase in ["joint", "primary", "complementary_complement"]
         self.phase = phase
 
-    def set_residual_use_complement(self, enabled: bool):
-        self.residual_use_complement = bool(enabled)
-        self.residual_gate_mode = "complement" if self.residual_use_complement else "independent"
+    def set_complementary_use_complement(self, enabled: bool):
+        self.complementary_use_complement = bool(enabled)
+        self.complementary_gate_mode = "complement" if self.complementary_use_complement else "independent"
 
-    def freeze_residual(self):
-        """residual branch 파라미터 gradients 막기"""
+    def freeze_complementary(self):
+        """complementary branch 파라미터 gradients 막기"""
         self.p_mf_centers.requires_grad_(False)
         self.p_mf_log_sigmas.requires_grad_(False)
-        for layer in self.residual_consequents:
+        for layer in self.complementary_consequents:
             for p in layer.parameters():
                 p.requires_grad_(False)
 
-    def unfreeze_residual(self):
-        """residual branch 파라미터 gradients 다시 허용"""
+    def unfreeze_complementary(self):
+        """complementary branch 파라미터 gradients 다시 허용"""
         self.p_mf_centers.requires_grad_(True)
         self.p_mf_log_sigmas.requires_grad_(True)
-        for layer in self.residual_consequents:
+        for layer in self.complementary_consequents:
             for p in layer.parameters():
                 p.requires_grad_(True)
 
-    def freeze_base(self):
-        """base branch 파라미터 gradients 막기"""
-        if self.base_consequents is None:
+    def freeze_primary(self):
+        """primary branch 파라미터 gradients 막기"""
+        if self.primary_consequents is None:
             return
         self.s_mf_centers.requires_grad_(False)
         self.s_mf_log_sigmas.requires_grad_(False)
-        for layer in self.base_consequents:
+        for layer in self.primary_consequents:
             for p in layer.parameters():
                 p.requires_grad_(False)
 
-    def unfreeze_base(self):
-        """base branch 파라미터 gradients 다시 허용"""
-        if self.base_consequents is None:
+    def unfreeze_primary(self):
+        """primary branch 파라미터 gradients 다시 허용"""
+        if self.primary_consequents is None:
             return
         self.s_mf_centers.requires_grad_(True)
         self.s_mf_log_sigmas.requires_grad_(True)
-        for layer in self.base_consequents:
+        for layer in self.primary_consequents:
             for p in layer.parameters():
                 p.requires_grad_(True)
 
-    def get_base_mask_probs(self):
-        return torch.sigmoid(self.base_mask_logits)
+    def get_primary_mask_probs(self):
+        return torch.sigmoid(self.primary_mask_logits)
 
-    def freeze_base_mask(self, threshold: float = None):
+    def freeze_primary_mask(self, threshold: float = None):
         if threshold is None:
-            threshold = self.base_mask_threshold
+            threshold = self.primary_mask_threshold
         with torch.no_grad():
-            base_soft = torch.sigmoid(self.base_mask_logits)
-            hard = _hard_mask_from_probs(base_soft, threshold)
-            self.base_mask_hard.copy_(hard)
-        self.base_mask_frozen = True
-        self.base_mask_logits.requires_grad_(False)
+            primary_soft = torch.sigmoid(self.primary_mask_logits)
+            hard = _hard_mask_from_probs(primary_soft, threshold)
+            self.primary_mask_hard.copy_(hard)
+        self.primary_mask_frozen = True
+        self.primary_mask_logits.requires_grad_(False)
 
-    def unfreeze_base_mask(self):
-        self.base_mask_frozen = False
-        self.base_mask_logits.requires_grad_(True)
+    def unfreeze_primary_mask(self):
+        self.primary_mask_frozen = False
+        self.primary_mask_logits.requires_grad_(True)
 
-    def get_residual_mask_probs(self):
-        return torch.sigmoid(self.residual_mask_logits)
+    def get_complementary_mask_probs(self):
+        return torch.sigmoid(self.complementary_mask_logits)
 
-    def freeze_residual_mask(self, threshold: float = None):
+    def freeze_complementary_mask(self, threshold: float = None):
         if threshold is None:
-            threshold = self.residual_mask_threshold
+            threshold = self.complementary_mask_threshold
         with torch.no_grad():
-            residual_soft = torch.sigmoid(self.residual_mask_logits)
-            hard = _hard_mask_from_probs(residual_soft, threshold)
-            self.residual_mask_hard.copy_(hard)
-        self.residual_mask_frozen = True
-        self.residual_mask_logits.requires_grad_(False)
+            complementary_soft = torch.sigmoid(self.complementary_mask_logits)
+            hard = _hard_mask_from_probs(complementary_soft, threshold)
+            self.complementary_mask_hard.copy_(hard)
+        self.complementary_mask_frozen = True
+        self.complementary_mask_logits.requires_grad_(False)
 
-    def unfreeze_residual_mask(self):
-        self.residual_mask_frozen = False
-        self.residual_mask_logits.requires_grad_(True)
+    def unfreeze_complementary_mask(self):
+        self.complementary_mask_frozen = False
+        self.complementary_mask_logits.requires_grad_(True)
 
-    def freeze_base_routing(self, threshold: float = None):
-        self.freeze_base_mask(threshold=threshold)
+    def freeze_primary_routing(self, threshold: float = None):
+        self.freeze_primary_mask(threshold=threshold)
 
-    def unfreeze_base_routing(self):
-        self.unfreeze_base_mask()
+    def unfreeze_primary_routing(self):
+        self.unfreeze_primary_mask()
 
-    def freeze_residual_routing(self):
-        self.freeze_residual_mask(threshold=self.residual_mask_threshold)
-        if hasattr(self, "residual_routing_net") and self.residual_routing_net is not None:
-            for p in self.residual_routing_net.parameters():
+    def freeze_complementary_routing(self):
+        self.freeze_complementary_mask(threshold=self.complementary_mask_threshold)
+        if hasattr(self, "complementary_routing_net") and self.complementary_routing_net is not None:
+            for p in self.complementary_routing_net.parameters():
                 p.requires_grad_(False)
 
-    def unfreeze_residual_routing(self):
-        self.unfreeze_residual_mask()
-        if hasattr(self, "residual_routing_net") and self.residual_routing_net is not None:
-            for p in self.residual_routing_net.parameters():
+    def unfreeze_complementary_routing(self):
+        self.unfreeze_complementary_mask()
+        if hasattr(self, "complementary_routing_net") and self.complementary_routing_net is not None:
+            for p in self.complementary_routing_net.parameters():
                 p.requires_grad_(True)
 
     # 기존 이름 호환
     def freeze_routing(self):
-        self.freeze_base_routing()
-        self.freeze_residual_routing()
+        self.freeze_primary_routing()
+        self.freeze_complementary_routing()
 
     def unfreeze_routing(self):
-        self.unfreeze_base_routing()
-        self.unfreeze_residual_routing()
+        self.unfreeze_primary_routing()
+        self.unfreeze_complementary_routing()
 
     # ───────── Forward ─────────
     def forward(self, x, return_activations: bool = False, use_soft_eval: bool = False):
@@ -695,110 +695,110 @@ class GH_ANFIS(nn.Module):
         B, D = x_n.shape
         # print(B, D)
 
-        # ── Base(primary) gate
+        # ── Primary gate
         # soft stage: consequent only
         # hard stage: antecedent + consequent both hard masked
-        base_soft_b, base_hard_b, antecedent_base_mask, gate_base = self._resolve_gate_state(
-            self.base_mask_logits,
-            self.base_mask_hard,
-            self.base_mask_frozen,
-            self.base_mask_threshold,
+        primary_soft_b, primary_hard_b, antecedent_primary_mask, gate_primary = self._resolve_gate_state(
+            self.primary_mask_logits,
+            self.primary_mask_hard,
+            self.primary_mask_frozen,
+            self.primary_mask_threshold,
             B,
             use_soft_eval=use_soft_eval,
         )
 
-        # ── Residual(complementary) gate ────────────────────────────────
-        residual_soft_b, residual_hard_b, residual_self_antecedent_mask, gate_residual_raw = self._resolve_gate_state(
-            self.residual_mask_logits,
-            self.residual_mask_hard,
-            self.residual_mask_frozen,
-            self.residual_mask_threshold,
+        # ── Complementary gate ────────────────────────────────
+        complementary_soft_b, complementary_hard_b, complementary_self_antecedent_mask, gate_complementary_raw = self._resolve_gate_state(
+            self.complementary_mask_logits,
+            self.complementary_mask_hard,
+            self.complementary_mask_frozen,
+            self.complementary_mask_threshold,
             B,
             use_soft_eval=use_soft_eval,
         )
 
-        # ── base branch ───────────────────────────
-        if self.base_consequents is not None:
+        # ── primary branch ───────────────────────────
+        if self.primary_consequents is not None:
             s_w = self._calculate_membership(
                 x_n,
                 self.s_mf_centers,
                 self.s_mf_log_sigmas,
                 self.s_rule_mf_indices,
-                antecedent_mask=antecedent_base_mask,
+                antecedent_mask=antecedent_primary_mask,
             )  # (B, R_s)
 
             s_rule_out = self._module_consequent(
-                x_n, self.base_consequents, self.base_rules, gate=gate_base
+                x_n, self.primary_consequents, self.primary_rules, gate=gate_primary
             )  # (B, R_s, O)
             s_out = (s_w.unsqueeze(-1) * s_rule_out).sum(dim=1)  # (B, O)
         else:
             s_w = None
             s_out = torch.zeros(B, self.n_outputs, device=self.device)
 
-        # ── residual branch ─────────────────────────────
-        if (not self.enable_residual_branch) or self.phase == "base":
-            residual_available_mask = torch.zeros(B, D, device=self.device)
-            antecedent_residual_mask = torch.zeros(B, D, device=self.device)
-            gate_residual = torch.zeros(B, D, device=self.device)
-            p_w = torch.zeros(B, self.residual_rules, device=self.device)
+        # ── complementary branch ─────────────────────────────
+        if (not self.enable_complementary_branch) or self.phase == "primary":
+            complementary_available_mask = torch.zeros(B, D, device=self.device)
+            antecedent_complementary_mask = torch.zeros(B, D, device=self.device)
+            gate_complementary = torch.zeros(B, D, device=self.device)
+            p_w = torch.zeros(B, self.complementary_rules, device=self.device)
             p_out = torch.zeros(B, self.n_outputs, device=self.device)
         else:
-            if self.residual_gate_mode == "complement":
-                residual_available_mask = (1.0 - base_hard_b).detach()
-                gate_residual = residual_available_mask * gate_residual_raw
-                if residual_self_antecedent_mask is None:
-                    antecedent_residual_mask = residual_available_mask
+            if self.complementary_gate_mode == "complement":
+                complementary_available_mask = (1.0 - primary_hard_b).detach()
+                gate_complementary = complementary_available_mask * gate_complementary_raw
+                if complementary_self_antecedent_mask is None:
+                    antecedent_complementary_mask = complementary_available_mask
                 else:
-                    antecedent_residual_mask = residual_available_mask * residual_self_antecedent_mask
-            elif self.residual_gate_mode == "independent":
-                residual_available_mask = torch.ones(B, D, device=self.device)
-                antecedent_residual_mask = residual_self_antecedent_mask
-                gate_residual = gate_residual_raw
+                    antecedent_complementary_mask = complementary_available_mask * complementary_self_antecedent_mask
+            elif self.complementary_gate_mode == "independent":
+                complementary_available_mask = torch.ones(B, D, device=self.device)
+                antecedent_complementary_mask = complementary_self_antecedent_mask
+                gate_complementary = gate_complementary_raw
             else:
-                raise ValueError(f"Unsupported residual_gate_mode: {self.residual_gate_mode}")
+                raise ValueError(f"Unsupported complementary_gate_mode: {self.complementary_gate_mode}")
 
-            # residual input = original features only (removed s_out)
-            residual_input = x_n
+            # complementary input = original features only (removed s_out)
+            complementary_input = x_n
 
             p_w = self._calculate_membership(
-                residual_input,
+                complementary_input,
                 self.p_mf_centers,
                 self.p_mf_log_sigmas,
                 self.p_rule_mf_indices,
-                antecedent_mask=antecedent_residual_mask,
+                antecedent_mask=antecedent_complementary_mask,
             )  # (B, R_p)
 
             p_rule_out = self._module_consequent(
-                residual_input,
-                self.residual_consequents,
-                self.residual_rules,
-                gate=gate_residual,
+                complementary_input,
+                self.complementary_consequents,
+                self.complementary_rules,
+                gate=gate_complementary,
             )  # (B, R_p, O)
             p_out = (p_w.unsqueeze(-1) * p_rule_out).sum(dim=1)  # (B, O)
 
         # ── 최종 출력 결합 (mode에 따라) ─────────────────
-        if self.mode == "base_only":
+        if self.mode == "primary_only":
             y = s_out
-        elif self.mode == "residual_only":
+        elif self.mode == "complementary_only":
             y = p_out
         else:  # "full"
             y = s_out + p_out
 
         if return_activations:
             activations = {
-                "gate_base": gate_base,                            # consequent gate (B, D)
-                "gate_base_raw": base_soft_b,                      # sigmoid gate probs (B, D)
-                "gate_base_hard": base_hard_b,                     # antecedent hard mask (B, D)
-                "antecedent_mask_base": antecedent_base_mask,      # (B, D) or None in soft stage
-                "gate_residual_raw": gate_residual_raw,            # residual sigmoid gate probs (B, D)
-                "gate_residual_hard": residual_hard_b,             # residual self hard mask (B, D)
-                "gate_residual": gate_residual,                    # effective consequent gate (B, D)
-                "antecedent_mask_residual": antecedent_residual_mask,  # (B, D) or None in soft stage
-                "residual_available_mask": residual_available_mask, # base complement mask (B, D)
-                "residual_rule_weights": p_w,                      # (B, R_p)
-                "base_rule_weights": s_w,                          # (B, R_s) or None
-                "residual_output": p_out,                          # (B, O)
-                "base_output": s_out,                              # (B, O)
+                "gate_primary": gate_primary,                            # consequent gate (B, D)
+                "gate_primary_raw": primary_soft_b,                      # sigmoid gate probs (B, D)
+                "gate_primary_hard": primary_hard_b,                     # antecedent hard mask (B, D)
+                "antecedent_mask_primary": antecedent_primary_mask,      # (B, D) or None in soft stage
+                "gate_complementary_raw": gate_complementary_raw,            # complementary sigmoid gate probs (B, D)
+                "gate_complementary_hard": complementary_hard_b,             # complementary self hard mask (B, D)
+                "gate_complementary": gate_complementary,                    # effective consequent gate (B, D)
+                "antecedent_mask_complementary": antecedent_complementary_mask,  # (B, D) or None in soft stage
+                "complementary_available_mask": complementary_available_mask, # primary complement mask (B, D)
+                "complementary_rule_weights": p_w,                      # (B, R_p)
+                "primary_rule_weights": s_w,                          # (B, R_s) or None
+                "complementary_output": p_out,                          # (B, O)
+                "primary_output": s_out,                              # (B, O)
             }
             return y, activations
 
@@ -1114,7 +1114,7 @@ class ParallelHierarchicalTSKANFIS(nn.Module):
 # ─────────────────────────────────────────────────────────────
 # AHANFIS (Attentive Hybrid ANFIS) 계열
 # - 기존 code_AHANFIS/model_ahanfis_gaus_gattn_mattn_drinit_200309_0907.py 기반
-# - GH-ANFIS 실험에서 import 가능하도록 model.py에 포함
+# - GRS-ANFIS 실험에서 import 가능하도록 model.py에 포함
 # ─────────────────────────────────────────────────────────────
 
 class mf:

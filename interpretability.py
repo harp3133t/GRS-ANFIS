@@ -112,40 +112,40 @@ def _hard_mask_from_logits(logits, threshold: float):
     return (probs >= float(threshold)).astype(np.float32)
 
 
-def _gh_masks(model, gate_threshold: float):
-    if getattr(model, "base_mask_frozen", False) and getattr(model, "base_mask_hard", None) is not None:
-        base_mask = _to_numpy(model.base_mask_hard)
+def _grs_masks(model, gate_threshold: float):
+    if getattr(model, "primary_mask_frozen", False) and getattr(model, "primary_mask_hard", None) is not None:
+        primary_mask = _to_numpy(model.primary_mask_hard)
     else:
-        base_mask = _hard_mask_from_logits(model.base_mask_logits, gate_threshold)
+        primary_mask = _hard_mask_from_logits(model.primary_mask_logits, gate_threshold)
 
-    if getattr(model, "residual_mask_frozen", False) and getattr(model, "residual_mask_hard", None) is not None:
-        residual_mask = _to_numpy(model.residual_mask_hard)
+    if getattr(model, "complementary_mask_frozen", False) and getattr(model, "complementary_mask_hard", None) is not None:
+        complementary_mask = _to_numpy(model.complementary_mask_hard)
     else:
-        residual_mask = _hard_mask_from_logits(model.residual_mask_logits, gate_threshold)
+        complementary_mask = _hard_mask_from_logits(model.complementary_mask_logits, gate_threshold)
 
-    base_mask = np.asarray(base_mask, dtype=np.float32)
-    residual_mask = np.asarray(residual_mask, dtype=np.float32)
+    primary_mask = np.asarray(primary_mask, dtype=np.float32)
+    complementary_mask = np.asarray(complementary_mask, dtype=np.float32)
 
-    if getattr(model, "residual_use_complement", True):
-        residual_mask = residual_mask * (1.0 - base_mask)
+    if getattr(model, "complementary_use_complement", True):
+        complementary_mask = complementary_mask * (1.0 - primary_mask)
 
-    return base_mask, residual_mask
+    return primary_mask, complementary_mask
 
 
-def _gh_branch_params(model, branch: str):
+def _grs_branch_params(model, branch: str):
     eps = float(getattr(model, "eps", 1e-6))
-    if branch == "base":
+    if branch == "primary":
         centers = _to_numpy(getattr(model, "s_mf_centers", None))
         log_sigmas = getattr(model, "s_mf_log_sigmas", None)
         sigmas = _to_numpy(F.softplus(log_sigmas) + eps) if log_sigmas is not None else None
-        n_rules = int(getattr(model, "base_rules", 0))
-    elif branch == "residual":
+        n_rules = int(getattr(model, "primary_rules", 0))
+    elif branch == "complementary":
         centers = _to_numpy(getattr(model, "p_mf_centers", None))
         log_sigmas = getattr(model, "p_mf_log_sigmas", None)
         sigmas = _to_numpy(F.softplus(log_sigmas) + eps) if log_sigmas is not None else None
-        n_rules = int(getattr(model, "residual_rules", 0))
+        n_rules = int(getattr(model, "complementary_rules", 0))
     else:
-        raise ValueError(f"Unknown GH branch: {branch}")
+        raise ValueError(f"Unknown GRS branch: {branch}")
     return centers, sigmas, n_rules
 
 
@@ -190,49 +190,49 @@ def _nauck_branch(centers, sigmas, domains, mask, n_rules, grid_size: int = 201,
     }
 
 
-def nauck_index_gh(model, X, gate_threshold: float = 0.5, grid_size: int = 201, n_classes: int = None):
+def nauck_index_grs(model, X, gate_threshold: float = 0.5, grid_size: int = 201, n_classes: int = None):
     domains = feature_domains_from_data(X)
     if not domains:
-        return {"base": None, "residual": None, "overall": None}
+        return {"primary": None, "complementary": None, "overall": None}
 
     if n_classes is None:
         n_classes = int(getattr(model, "n_outputs", 1) or 1)
 
-    base_mask, residual_mask = _gh_masks(model, gate_threshold)
+    primary_mask, complementary_mask = _grs_masks(model, gate_threshold)
 
-    base_centers, base_sigmas, base_rules = _gh_branch_params(model, "base")
-    resid_centers, resid_sigmas, resid_rules = _gh_branch_params(model, "residual")
+    primary_centers, primary_sigmas, primary_rules = _grs_branch_params(model, "primary")
+    complementary_centers, complementary_sigmas, complementary_rules = _grs_branch_params(model, "complementary")
 
-    base_info = _nauck_branch(
-        base_centers,
-        base_sigmas,
+    primary_info = _nauck_branch(
+        primary_centers,
+        primary_sigmas,
         domains,
-        base_mask,
-        base_rules,
+        primary_mask,
+        primary_rules,
         grid_size=grid_size,
         n_classes=n_classes,
     )
-    resid_info = _nauck_branch(
-        resid_centers,
-        resid_sigmas,
+    complementary_info = _nauck_branch(
+        complementary_centers,
+        complementary_sigmas,
         domains,
-        residual_mask,
-        resid_rules,
+        complementary_mask,
+        complementary_rules,
         grid_size=grid_size,
         n_classes=n_classes,
     )
 
-    total_rules = int(base_rules) + int(resid_rules)
+    total_rules = int(primary_rules) + int(complementary_rules)
     if total_rules > 0:
         overall_index = (
-            base_info["index"] * float(base_rules) + resid_info["index"] * float(resid_rules)
+            primary_info["index"] * float(primary_rules) + complementary_info["index"] * float(complementary_rules)
         ) / float(total_rules)
     else:
         overall_index = 0.0
 
     return {
-        "base": base_info,
-        "residual": resid_info,
+        "primary": primary_info,
+        "complementary": complementary_info,
         "overall": {"index": float(overall_index), "n_rules": total_rules},
     }
 
@@ -593,7 +593,7 @@ def hfsi_layer_weights(n_layers: int):
 
 def hfsi_aggregate(layer_values, layer_weights=None):
     """
-    Aggregate subsystem interpretability values with HFSi Eq. (6):
+    Aggregate component interpretability values with HFSi Eq. (6):
       HFSi = sum_i l_i * (1/m_i) * sum_j E_ij
     """
     cleaned_layers = []
@@ -633,28 +633,28 @@ def hfsi_aggregate(layer_values, layer_weights=None):
     }
 
 
-def nauck_index_gh_hierarchical(model, X, gate_threshold: float = 0.5, grid_size: int = 201, n_classes: int = None):
+def nauck_index_grs_hierarchical(model, X, gate_threshold: float = 0.5, grid_size: int = 201, n_classes: int = None):
     """
-    GH-ANFIS hierarchical Nauck (user-selected: 1-layer parallel).
-    - Layer 1 has two subsystems: base and residual.
-    - Eq. (6) with n=1, m1=2 => mean(base, residual).
+    GRS-ANFIS hierarchical Nauck (user-selected: 1-layer parallel).
+    - Layer 1 has two components: primary and complementary.
+    - Eq. (6) with n=1, m1=2 => mean(primary, complementary).
     """
-    gh_info = nauck_index_gh(
+    grs_info = nauck_index_grs(
         model,
         X,
         gate_threshold=gate_threshold,
         grid_size=grid_size,
         n_classes=n_classes,
     )
-    base = gh_info.get("base") or {}
-    residual = gh_info.get("residual") or {}
+    primary = grs_info.get("primary") or {}
+    complementary = grs_info.get("complementary") or {}
 
-    idx_hfsi = hfsi_aggregate([[base.get("index", np.nan), residual.get("index", np.nan)]])
-    comp_hfsi = hfsi_aggregate([[base.get("comp", np.nan), residual.get("comp", np.nan)]])
-    cov_hfsi = hfsi_aggregate([[base.get("cov", np.nan), residual.get("cov", np.nan)]])
-    part_hfsi = hfsi_aggregate([[base.get("part", np.nan), residual.get("part", np.nan)]])
+    idx_hfsi = hfsi_aggregate([[primary.get("index", np.nan), complementary.get("index", np.nan)]])
+    comp_hfsi = hfsi_aggregate([[primary.get("comp", np.nan), complementary.get("comp", np.nan)]])
+    cov_hfsi = hfsi_aggregate([[primary.get("cov", np.nan), complementary.get("cov", np.nan)]])
+    part_hfsi = hfsi_aggregate([[primary.get("part", np.nan), complementary.get("part", np.nan)]])
 
-    n_rules = int((base.get("n_rules", 0) or 0) + (residual.get("n_rules", 0) or 0))
+    n_rules = int((primary.get("n_rules", 0) or 0) + (complementary.get("n_rules", 0) or 0))
     overall = {
         "index": float(idx_hfsi["index"]),
         "comp": float(comp_hfsi["index"]),
@@ -666,8 +666,8 @@ def nauck_index_gh_hierarchical(model, X, gate_threshold: float = 0.5, grid_size
     }
 
     return {
-        "base": base,
-        "residual": residual,
+        "primary": primary,
+        "complementary": complementary,
         "overall": overall,
         "hfsi": idx_hfsi,
     }
@@ -843,53 +843,53 @@ def complexity_profile_parallel_hier_tsk(model):
     )
 
 
-def complexity_profile_gh(model, variant: str = "full"):
-    if variant not in {"full", "base"}:
-        raise ValueError("variant must be one of {'full', 'base'}")
+def complexity_profile_grs(model, variant: str = "full"):
+    if variant not in {"full", "primary"}:
+        raise ValueError("variant must be one of {'full', 'primary'}")
 
-    base_rules = int(getattr(model, "base_rules", 0) or 0)
-    resid_rules = int(getattr(model, "residual_rules", 0) or 0)
+    primary_rules = int(getattr(model, "primary_rules", 0) or 0)
+    complementary_rules = int(getattr(model, "complementary_rules", 0) or 0)
     n_features = int(getattr(model, "n_features", 0) or 0)
 
-    base_thr = float(getattr(model, "base_mask_threshold", 0.5))
-    resid_thr = float(getattr(model, "residual_mask_threshold", 0.5))
+    primary_thr = float(getattr(model, "primary_mask_threshold", 0.5))
+    complementary_thr = float(getattr(model, "complementary_mask_threshold", 0.5))
 
-    if getattr(model, "base_mask_frozen", False) and getattr(model, "base_mask_hard", None) is not None:
-        base_mask = _to_numpy(model.base_mask_hard)
+    if getattr(model, "primary_mask_frozen", False) and getattr(model, "primary_mask_hard", None) is not None:
+        primary_mask = _to_numpy(model.primary_mask_hard)
     else:
-        base_mask = (_to_numpy(torch.sigmoid(model.base_mask_logits)) >= base_thr).astype(np.float32)
+        primary_mask = (_to_numpy(torch.sigmoid(model.primary_mask_logits)) >= primary_thr).astype(np.float32)
 
-    if getattr(model, "residual_mask_frozen", False) and getattr(model, "residual_mask_hard", None) is not None:
-        resid_mask = _to_numpy(model.residual_mask_hard)
+    if getattr(model, "complementary_mask_frozen", False) and getattr(model, "complementary_mask_hard", None) is not None:
+        complementary_mask = _to_numpy(model.complementary_mask_hard)
     else:
-        resid_mask = (_to_numpy(torch.sigmoid(model.residual_mask_logits)) >= resid_thr).astype(np.float32)
+        complementary_mask = (_to_numpy(torch.sigmoid(model.complementary_mask_logits)) >= complementary_thr).astype(np.float32)
 
-    if base_mask is None:
-        base_mask = np.ones(n_features, dtype=np.float32)
-    if resid_mask is None:
-        resid_mask = np.ones(n_features, dtype=np.float32)
+    if primary_mask is None:
+        primary_mask = np.ones(n_features, dtype=np.float32)
+    if complementary_mask is None:
+        complementary_mask = np.ones(n_features, dtype=np.float32)
 
-    base_mask = np.asarray(base_mask, dtype=np.float32).reshape(-1)
-    resid_mask = np.asarray(resid_mask, dtype=np.float32).reshape(-1)
-    if getattr(model, "residual_use_complement", True):
-        resid_mask = resid_mask * (1.0 - base_mask)
+    primary_mask = np.asarray(primary_mask, dtype=np.float32).reshape(-1)
+    complementary_mask = np.asarray(complementary_mask, dtype=np.float32).reshape(-1)
+    if getattr(model, "complementary_use_complement", True):
+        complementary_mask = complementary_mask * (1.0 - primary_mask)
 
-    base_feats = int(np.sum(base_mask > 0))
-    resid_feats = int(np.sum(resid_mask > 0))
+    primary_feats = int(np.sum(primary_mask > 0))
+    complementary_feats = int(np.sum(complementary_mask > 0))
 
-    if variant == "base":
-        n_modules = 1 if base_rules > 0 else 0
+    if variant == "primary":
+        n_modules = 1 if primary_rules > 0 else 0
         n_layers = 1 if n_modules > 0 else 0
-        n_rules_total = int(base_rules)
-        n_rules_active = int(base_rules)
-        antecedents_total = float(base_rules * base_feats)
+        n_rules_total = int(primary_rules)
+        n_rules_active = int(primary_rules)
+        antecedents_total = float(primary_rules * primary_feats)
         antecedents_active = antecedents_total
     else:
-        n_modules = int((1 if base_rules > 0 else 0) + (1 if resid_rules > 0 else 0))
+        n_modules = int((1 if primary_rules > 0 else 0) + (1 if complementary_rules > 0 else 0))
         n_layers = 1 if n_modules > 0 else 0
-        n_rules_total = int(base_rules + resid_rules)
-        n_rules_active = int(base_rules + resid_rules)
-        antecedents_total = float(base_rules * base_feats + resid_rules * resid_feats)
+        n_rules_total = int(primary_rules + complementary_rules)
+        n_rules_active = int(primary_rules + complementary_rules)
+        antecedents_total = float(primary_rules * primary_feats + complementary_rules * complementary_feats)
         antecedents_active = antecedents_total
 
     c_rb = antecedents_active
@@ -954,7 +954,7 @@ def complexity_profile_acnn(model):
     )
 
 
-def complexity_profile_model(model, gh_variant: str = "full"):
+def complexity_profile_model(model, grs_variant: str = "full"):
     if model is None:
         return {
             "chfs": float("nan"),
@@ -973,8 +973,8 @@ def complexity_profile_model(model, gh_variant: str = "full"):
         return complexity_profile_parallel_hier_tsk(model)
     if hasattr(model, "tAnfisConv1") and hasattr(model, "tAnfisFC"):
         return complexity_profile_acnn(model)
-    if hasattr(model, "base_rules") and hasattr(model, "residual_rules"):
-        return complexity_profile_gh(model, variant=gh_variant)
+    if hasattr(model, "primary_rules") and hasattr(model, "complementary_rules"):
+        return complexity_profile_grs(model, variant=grs_variant)
     if hasattr(model, "n_rules") and hasattr(model, "n_inputs"):
         return complexity_profile_tsk(model)
 

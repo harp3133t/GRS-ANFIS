@@ -16,8 +16,8 @@ This repository contains the source code and public Jupyter notebooks used to re
 ├── model.py
 ├── learning.py
 ├── data.py
-├── gh_config.py
-├── gh_eval_utils.py
+├── grs_config.py
+├── grs_eval_utils.py
 ├── interpretability.py
 ├── feature_schema.py
 ├── utils.py
@@ -26,7 +26,7 @@ This repository contains the source code and public Jupyter notebooks used to re
 
 ## Notebooks
 
-- `notebooks/01_main_performance.ipynb`: main performance workflows, including the full main experiment and 5-fold BCWD/Vowel/GH-ANFIS runs.
+- `notebooks/01_main_performance.ipynb`: main performance workflows, including the full main experiment and 5-fold BCWD/Vowel/GRS-ANFIS runs.
 - `notebooks/02_additional_experiments.ipynb`: additional analyses, including complementary-boundary ablation, feature-count summaries, IF-THEN rule inspection, and BCWD interpretation cases.
 
 Both notebooks are committed without execution outputs so that the GitHub repository contains code only.

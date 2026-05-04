@@ -1,8 +1,8 @@
 import copy
 import numpy as np
 
-from gh_config import normalize_gh_params
-from model import ACNN, ACNNOld, GH_ANFIS, ParallelHierarchicalTSKANFIS, TSKANFIS
+from grs_config import normalize_grs_params
+from model import ACNN, ACNNOld, GRS_ANFIS, ParallelHierarchicalTSKANFIS, TSKANFIS
 from torch import nn, optim
 import torch
 import matplotlib.pyplot as plt
@@ -15,12 +15,12 @@ def make_optimizer(model, lr=1e-3, weight_decay=1e-5):
     )
 
 
-def _effective_residual_l1(model, activations, device):
-    gate_resid = activations.get("gate_residual", None)
-    if gate_resid is not None:
-        return torch.mean(torch.abs(gate_resid))
-    if hasattr(model, "get_residual_mask_probs") and not getattr(model, "residual_mask_frozen", False):
-        return torch.mean(model.get_residual_mask_probs())
+def _effective_complementary_l1(model, activations, device):
+    gate_complementary = activations.get("gate_complementary", None)
+    if gate_complementary is not None:
+        return torch.mean(torch.abs(gate_complementary))
+    if hasattr(model, "get_complementary_mask_probs") and not getattr(model, "complementary_mask_frozen", False):
+        return torch.mean(model.get_complementary_mask_probs())
     return torch.tensor(0.0, device=device)
 
 
@@ -30,9 +30,9 @@ def train_one_epoch_dual_cls(
     criterion,
     optimizer,
     device,
-    phase="base",
-    lambda_base=0.0,
-    lambda_resid=0.0,
+    phase="primary",
+    lambda_primary=0.0,
+    lambda_complementary=0.0,
     lambda_bimodal=0.0,
     feature_names=None,
     binary_columns=None,
@@ -46,8 +46,8 @@ def train_one_epoch_dual_cls(
 
     running_loss = 0.0
     running_pred = 0.0
-    running_l1_base = 0.0
-    running_l1_resid = 0.0
+    running_l1_primary = 0.0
+    running_l1_complementary = 0.0
     running_overlap = 0.0
 
     target_sigma = torch.log(torch.exp(torch.tensor(0.01)) - 1 + 1e-6).to(device)
@@ -128,36 +128,36 @@ def train_one_epoch_dual_cls(
                 else:
                     pred_loss = criterion(probs, y_index)
 
-        gate_base = activations.get("gate_base", None)
-        gate_resid = activations.get("gate_residual", None)
+        gate_primary = activations.get("gate_primary", None)
+        gate_complementary = activations.get("gate_complementary", None)
 
-        if hasattr(model, "get_base_mask_probs") and not getattr(model, "base_mask_frozen", False):
-            base_probs = model.get_base_mask_probs()
-            l1_base = torch.mean(base_probs)
-            bimodal = torch.mean(base_probs * (1.0 - base_probs))
+        if hasattr(model, "get_primary_mask_probs") and not getattr(model, "primary_mask_frozen", False):
+            primary_probs = model.get_primary_mask_probs()
+            l1_primary = torch.mean(primary_probs)
+            bimodal = torch.mean(primary_probs * (1.0 - primary_probs))
         else:
-            l1_base = (
-                torch.mean(torch.abs(gate_base))
-                if gate_base is not None
+            l1_primary = (
+                torch.mean(torch.abs(gate_primary))
+                if gate_primary is not None
                 else torch.tensor(0.0, device=device)
             )
             bimodal = (
-                torch.mean(gate_base * (1.0 - gate_base))
-                if gate_base is not None
+                torch.mean(gate_primary * (1.0 - gate_primary))
+                if gate_primary is not None
                 else torch.tensor(0.0, device=device)
             )
 
-        l1_resid = _effective_residual_l1(model, activations, device)
+        l1_complementary = _effective_complementary_l1(model, activations, device)
 
-        if (gate_base is not None) and (gate_resid is not None):
-            overlap_loss = torch.mean(gate_base * gate_resid)
+        if (gate_primary is not None) and (gate_complementary is not None):
+            overlap_loss = torch.mean(gate_primary * gate_complementary)
         else:
             overlap_loss = torch.tensor(0.0, device=device)
 
         total_loss = (
             pred_loss
-            + lambda_base * l1_base
-            + lambda_resid * l1_resid
+            + lambda_primary * l1_primary
+            + lambda_complementary * l1_complementary
             + lambda_bimodal * bimodal
         )
 
@@ -183,21 +183,21 @@ def train_one_epoch_dual_cls(
         batch_size = inputs.size(0)
         running_loss += total_loss.item() * batch_size
         running_pred += pred_loss.item() * batch_size
-        running_l1_base += l1_base.item() * batch_size
-        running_l1_resid += l1_resid.item() * batch_size
+        running_l1_primary += l1_primary.item() * batch_size
+        running_l1_complementary += l1_complementary.item() * batch_size
         running_overlap += overlap_loss.item() * batch_size
 
     n_data = len(dataloader.dataset)
     return (
         running_loss / n_data,
         running_pred / n_data,
-        running_l1_base / n_data,
-        running_l1_resid / n_data,
+        running_l1_primary / n_data,
+        running_l1_complementary / n_data,
         running_overlap / n_data,
     )
 
 
-def train_gh_anfis(
+def train_grs_anfis(
     train_loader,
     test_loader,
     n_features,
@@ -208,11 +208,11 @@ def train_gh_anfis(
     hparams,
     task_kind,
 ):
-    # model = GH_AANFIS(
+    # model = GRS_AANFIS(
     #     n_features=n_features,
     #     n_outputs=n_outputs,
-    #     base_rules=hparams["base_rules"],
-    #     residual_rules=hparams["residual_rules"],
+    #     primary_rules=hparams["primary_rules"],
+    #     complementary_rules=hparams["complementary_rules"],
     #     mf_per_feature=hparams["mf_per_feature"],
     #     attn_hidden=64,
     #     attn_tau=1.0,
@@ -220,11 +220,11 @@ def train_gh_anfis(
     #     attn_hard=False,  # 일단 soft로 시작 추천
     #     device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     # ).to(device)
-    model = GH_ANFIS(
+    model = GRS_ANFIS(
         n_features=n_features,
         n_outputs=n_outputs,
-        residual_rules=hparams["residual_rules"],
-        base_rules=hparams["base_rules"],
+        complementary_rules=hparams["complementary_rules"],
+        primary_rules=hparams["primary_rules"],
         mf_per_feature=hparams["mf_per_feature"],
         device=device,
     ).to(device)
@@ -234,21 +234,21 @@ def train_gh_anfis(
     else:
         criterion = nn.BCELoss()
 
-    num_epochs_stage1 = hparams["base_epochs"]
-    lambda_base_s1 = hparams.get("lambda_base_s1", 1.0)
-    lambda_resid_s1 = 0.0
+    num_epochs_stage1 = hparams.get("primary_epochs", hparams.get("epochs_stage1", 20))
+    lambda_primary_s1 = hparams.get("lambda_primary_s1", 1.0)
+    lambda_complementary_s1 = 0.0
     lambda_bimodal_s1 = hparams.get("lambda_bimodal_s1", 0.0)
 
-    model.set_phase("base")
-    model.set_mode("base_only")
-    model.unfreeze_base()
-    model.unfreeze_base_routing()
-    model.freeze_residual()
-    model.freeze_residual_routing()
+    model.set_phase("primary")
+    model.set_mode("primary_only")
+    model.unfreeze_primary()
+    model.unfreeze_primary_routing()
+    model.freeze_complementary()
+    model.freeze_complementary_routing()
 
     optimizer = make_optimizer(
         model,
-        lr=hparams["lr_base"],
+        lr=hparams["lr_primary"],
         weight_decay=hparams["weight_decay"],
     )
 
@@ -259,9 +259,9 @@ def train_gh_anfis(
             criterion,
             optimizer,
             device,
-            phase="base",
-            lambda_base=lambda_base_s1,
-            lambda_resid=lambda_resid_s1,
+            phase="primary",
+            lambda_primary=lambda_primary_s1,
+            lambda_complementary=lambda_complementary_s1,
             lambda_bimodal=lambda_bimodal_s1,
             feature_names=list(feature_names),
             binary_columns=binary_columns,
@@ -271,31 +271,31 @@ def train_gh_anfis(
         )
         if epoch % 10 == 0 or epoch == 1:
             print(
-                f"[GH-ANFIS Stage1 {epoch:03d}] "
+                f"[GRS-ANFIS Stage1 {epoch:03d}] "
                 f"Total Loss: {train_total_loss:.4f} "
                 f"(BCE: {train_pred_loss:.4f} | "
-                f"L1(Base): {l1_b:.2f} | L1(Resid): {l1_r:.2f} | "
+                f"L1(Primary): {l1_b:.2f} | L1(Complementary): {l1_r:.2f} | "
                 f"L1(Overlap): {l1_overlap:.2f}) "
                 f"Val BCE: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}"
             )
 
-    num_epochs_stage1_hard = hparams.get("base_hard_epochs", 0)
+    num_epochs_stage1_hard = hparams.get("primary_hard_epochs", 0)
     if num_epochs_stage1_hard > 0:
-        hard_threshold = hparams.get("base_mask_threshold", None)
-        model.freeze_base_routing(threshold=hard_threshold)
-        model.set_phase("base")
-        model.set_mode("base_only")
-        model.unfreeze_base()
-        model.freeze_residual()
-        model.freeze_residual_routing()
+        hard_threshold = hparams.get("primary_mask_threshold", None)
+        model.freeze_primary_routing(threshold=hard_threshold)
+        model.set_phase("primary")
+        model.set_mode("primary_only")
+        model.unfreeze_primary()
+        model.freeze_complementary()
+        model.freeze_complementary_routing()
 
         optimizer = make_optimizer(
             model,
-            lr=hparams.get("lr_base_hard", hparams["lr_base"]),
+            lr=hparams.get("lr_primary_hard", hparams["lr_primary"]),
             weight_decay=hparams["weight_decay"],
         )
 
-        lambda_base_hard = hparams.get("lambda_base_hard", 0.0)
+        lambda_primary_hard = hparams.get("lambda_primary_hard", 0.0)
 
         for epoch in range(1, num_epochs_stage1_hard + 1):
             train_total_loss, train_pred_loss, l1_b, l1_r, l1_overlap = train_one_epoch_dual_cls(
@@ -304,9 +304,9 @@ def train_gh_anfis(
                 criterion,
                 optimizer,
                 device,
-                phase="base",
-                lambda_base=lambda_base_hard,
-                lambda_resid=lambda_resid_s1,
+                phase="primary",
+                lambda_primary=lambda_primary_hard,
+                lambda_complementary=lambda_complementary_s1,
                 lambda_bimodal=0.0,
                 feature_names=list(feature_names),
                 binary_columns=binary_columns,
@@ -316,28 +316,28 @@ def train_gh_anfis(
             )
             if epoch % 10 == 0 or epoch == 1 or epoch == num_epochs_stage1_hard:
                 print(
-                    f"[GH-ANFIS Stage1-Hard {epoch:03d}] "
+                    f"[GRS-ANFIS Stage1-Hard {epoch:03d}] "
                     f"Total Loss: {train_total_loss:.4f} "
                     f"(BCE: {train_pred_loss:.4f} | "
-                    f"L1(Base): {l1_b:.2f} | L1(Resid): {l1_r:.2f} | "
+                    f"L1(Primary): {l1_b:.2f} | L1(Complementary): {l1_r:.2f} | "
                     f"L1(Overlap): {l1_overlap:.2f}) "
                     f"Val BCE: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}"
                 )
 
-    num_epochs_stage2 = hparams["residual_epochs"]
-    lambda_base_s2 = 0.0
-    lambda_resid_s2 = hparams.get("lambda_resid_s2", 0.1)
+    num_epochs_stage2 = hparams.get("complementary_epochs", hparams.get("epochs_stage2", 20))
+    lambda_primary_s2 = 0.0
+    lambda_complementary_s2 = hparams.get("lambda_complementary_s2", 0.1)
 
-    model.set_phase("residual_complement")
+    model.set_phase("complementary_complement")
     model.set_mode("full")
-    model.freeze_base()
-    model.freeze_base_routing()
-    model.unfreeze_residual()
-    model.unfreeze_residual_routing()
+    model.freeze_primary()
+    model.freeze_primary_routing()
+    model.unfreeze_complementary()
+    model.unfreeze_complementary_routing()
 
     optimizer = make_optimizer(
         model,
-        lr=hparams["lr_residual"],
+        lr=hparams["lr_complementary"],
         weight_decay=hparams["weight_decay"],
     )
 
@@ -348,9 +348,9 @@ def train_gh_anfis(
             criterion,
             optimizer,
             device,
-            phase="residual_complement",
-            lambda_base=lambda_base_s2,
-            lambda_resid=lambda_resid_s2,
+            phase="complementary_complement",
+            lambda_primary=lambda_primary_s2,
+            lambda_complementary=lambda_complementary_s2,
             feature_names=list(feature_names),
             binary_columns=binary_columns,
         )
@@ -359,33 +359,33 @@ def train_gh_anfis(
         )
         if epoch % 10 == 0 or epoch == 1:
             print(
-                f"[GH-ANFIS Stage2 {epoch:03d}] "
+                f"[GRS-ANFIS Stage2 {epoch:03d}] "
                 f"Total Loss: {train_total_loss:.4f} "
                 f"(BCE: {train_pred_loss:.4f} | "
-                f"L1(Base): {l1_b:.2f} | L1(Resid): {l1_r:.2f} | "
+                f"L1(Primary): {l1_b:.2f} | L1(Complementary): {l1_r:.2f} | "
                 f"L1(Overlap): {l1_overlap:.2f}) "
                 f"Val BCE: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}"
             )
 
-    num_epochs_stage2_hard = hparams.get("residual_hard_epochs", 0)
+    num_epochs_stage2_hard = hparams.get("complementary_hard_epochs", 0)
     if num_epochs_stage2_hard > 0:
-        hard_threshold = hparams.get("residual_mask_threshold", None)
+        hard_threshold = hparams.get("complementary_mask_threshold", None)
         if hard_threshold is not None:
-            model.residual_mask_threshold = hard_threshold
-        model.freeze_residual_routing()
-        model.set_phase("residual_complement")
+            model.complementary_mask_threshold = hard_threshold
+        model.freeze_complementary_routing()
+        model.set_phase("complementary_complement")
         model.set_mode("full")
-        model.freeze_base()
-        model.freeze_base_routing()
-        model.unfreeze_residual()
+        model.freeze_primary()
+        model.freeze_primary_routing()
+        model.unfreeze_complementary()
 
         optimizer = make_optimizer(
             model,
-            lr=hparams.get("lr_residual_hard", hparams["lr_residual"]),
+            lr=hparams.get("lr_complementary_hard", hparams["lr_complementary"]),
             weight_decay=hparams["weight_decay"],
         )
 
-        lambda_resid_hard = hparams.get("lambda_resid_hard", 0.0)
+        lambda_complementary_hard = hparams.get("lambda_complementary_hard", 0.0)
 
         for epoch in range(1, num_epochs_stage2_hard + 1):
             train_total_loss, train_pred_loss, l1_b, l1_r, l1_overlap = train_one_epoch_dual_cls(
@@ -394,9 +394,9 @@ def train_gh_anfis(
                 criterion,
                 optimizer,
                 device,
-                phase="residual_complement",
-                lambda_base=lambda_base_s2,
-                lambda_resid=lambda_resid_hard,
+                phase="complementary_complement",
+                lambda_primary=lambda_primary_s2,
+                lambda_complementary=lambda_complementary_hard,
                 feature_names=list(feature_names),
                 binary_columns=binary_columns,
             )
@@ -405,68 +405,68 @@ def train_gh_anfis(
             )
             if epoch % 10 == 0 or epoch == 1 or epoch == num_epochs_stage2_hard:
                 print(
-                    f"[GH-ANFIS Stage2-Hard {epoch:03d}] "
+                    f"[GRS-ANFIS Stage2-Hard {epoch:03d}] "
                     f"Total Loss: {train_total_loss:.4f} "
                     f"(BCE: {train_pred_loss:.4f} | "
-                    f"L1(Base): {l1_b:.2f} | L1(Resid): {l1_r:.2f} | "
+                    f"L1(Primary): {l1_b:.2f} | L1(Complementary): {l1_r:.2f} | "
                     f"L1(Overlap): {l1_overlap:.2f}) "
                     f"Val BCE: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}"
                 )
 
     metrics = {}
 
-    model.set_phase("base")
-    model.set_mode("base_only")
+    model.set_phase("primary")
+    model.set_mode("primary_only")
     _, test_acc, test_f1 = evaluate_torch_classification(
         model, test_loader, criterion, device, task_kind, use_soft_eval=False
     )
-    metrics["base_hard"] = (test_acc, test_f1)
+    metrics["primary_hard"] = (test_acc, test_f1)
 
-    was_frozen = model.base_mask_frozen
+    was_frozen = model.primary_mask_frozen
     if was_frozen:
-        model.base_mask_frozen = False
+        model.primary_mask_frozen = False
     _, test_acc, test_f1 = evaluate_torch_classification(
         model, test_loader, criterion, device, task_kind, use_soft_eval=True
     )
-    metrics["base_soft"] = (test_acc, test_f1)
+    metrics["primary_soft"] = (test_acc, test_f1)
     if was_frozen:
-        model.base_mask_frozen = True
+        model.primary_mask_frozen = True
 
-    model.set_phase("residual_complement")
-    model.set_mode("residual_only")
+    model.set_phase("complementary_complement")
+    model.set_mode("complementary_only")
     _, test_acc, test_f1 = evaluate_torch_classification(
         model, test_loader, criterion, device, task_kind
     )
-    metrics["residual"] = (test_acc, test_f1)
+    metrics["complementary"] = (test_acc, test_f1)
 
-    model.set_phase("residual_complement")
+    model.set_phase("complementary_complement")
     model.set_mode("full")
     _, test_acc, test_f1 = evaluate_torch_classification(
         model, test_loader, criterion, device, task_kind
     )
     metrics["full"] = (test_acc, test_f1)
 
-    was_base_frozen = model.base_mask_frozen
-    was_resid_frozen = model.residual_mask_frozen
-    if was_base_frozen:
-        model.base_mask_frozen = False
-    if was_resid_frozen:
-        model.residual_mask_frozen = False
+    was_primary_frozen = model.primary_mask_frozen
+    was_complementary_frozen = model.complementary_mask_frozen
+    if was_primary_frozen:
+        model.primary_mask_frozen = False
+    if was_complementary_frozen:
+        model.complementary_mask_frozen = False
     _, test_acc, test_f1 = evaluate_torch_classification(
         model, test_loader, criterion, device, task_kind, use_soft_eval=True
     )
     metrics["full_soft"] = (test_acc, test_f1)
-    if was_base_frozen:
-        model.base_mask_frozen = True
-    if was_resid_frozen:
-        model.residual_mask_frozen = True
+    if was_primary_frozen:
+        model.primary_mask_frozen = True
+    if was_complementary_frozen:
+        model.complementary_mask_frozen = True
 
-    top_k = hparams.get("base_top_k", 10)
+    top_k = hparams.get("primary_top_k", 10)
     if feature_names is not None:
-        base_probs = model.get_base_mask_probs().detach().cpu()
-        top_k = max(1, min(int(top_k), base_probs.numel()))
-        top_vals, top_idx = torch.topk(base_probs, k=top_k)
-        print(f"GH-ANFIS base mask top-{top_k} (probabilities):")
+        primary_probs = model.get_primary_mask_probs().detach().cpu()
+        top_k = max(1, min(int(top_k), primary_probs.numel()))
+        top_vals, top_idx = torch.topk(primary_probs, k=top_k)
+        print(f"GRS-ANFIS primary mask top-{top_k} (probabilities):")
         for idx, val in zip(top_idx.tolist(), top_vals.tolist()):
             name = feature_names[idx] if idx < len(feature_names) else f"x{idx}"
             print(f"  {name}: {val:.4f}")
@@ -536,7 +536,7 @@ def train_sklearn_model(model, X_train, y_train, X_test, y_test):
 
 
 
-def fit_gh_anfis(
+def fit_grs_anfis(
     params,
     train_loader,
     n_features,
@@ -545,29 +545,29 @@ def fit_gh_anfis(
     feature_names,
     device,
     verbose=False,
-    residual_use_complement=True,
+    complementary_use_complement=True,
     random_role_assignment=False,
 ):
     params = dict(params or {})
-    if "residual_gate_mode" not in params:
-        params["residual_gate_mode"] = "complement" if residual_use_complement else "independent"
+    if "complementary_gate_mode" not in params:
+        params["complementary_gate_mode"] = "complement" if complementary_use_complement else "independent"
     if "random_role_assignment" not in params:
         params["random_role_assignment"] = random_role_assignment
-    params = normalize_gh_params(params)
+    params = normalize_grs_params(params)
 
-    model = GH_ANFIS(
+    model = GRS_ANFIS(
         n_features=n_features,
         n_outputs=n_outputs,
-        residual_rules=params["residual_rules"],
-        base_rules=params["base_rules"],
+        complementary_rules=params["complementary_rules"],
+        primary_rules=params["primary_rules"],
         mf_per_feature=params["mf_per_feature"],
         device=device,
-        residual_gate_mode=params["residual_gate_mode"],
+        complementary_gate_mode=params["complementary_gate_mode"],
         rule_init_mode=params["rule_init_mode"],
         rule_seed=params["rule_seed"],
         firing_mode=params["firing_mode"],
         use_input_norm=params["use_input_norm"],
-        enable_residual_branch=params["enable_residual_branch"],
+        enable_complementary_branch=params["enable_complementary_branch"],
     ).to(device)
 
     if task_kind == "multiclass":
@@ -582,41 +582,41 @@ def fit_gh_anfis(
 
     if random_role_assignment:
         with torch.no_grad():
-            base_rand = torch.rand_like(model.base_mask_logits)
-            base_hard = (base_rand > 0.5).float()
-            if base_hard.sum() == 0:
-                idx = torch.randint(0, base_hard.numel(), (1,), device=base_hard.device)
-                base_hard[idx] = 1.0
-            if base_hard.sum() == base_hard.numel():
-                idx = torch.randint(0, base_hard.numel(), (1,), device=base_hard.device)
-                base_hard[idx] = 0.0
+            primary_rand = torch.rand_like(model.primary_mask_logits)
+            primary_hard = (primary_rand > 0.5).float()
+            if primary_hard.sum() == 0:
+                idx = torch.randint(0, primary_hard.numel(), (1,), device=primary_hard.device)
+                primary_hard[idx] = 1.0
+            if primary_hard.sum() == primary_hard.numel():
+                idx = torch.randint(0, primary_hard.numel(), (1,), device=primary_hard.device)
+                primary_hard[idx] = 0.0
 
-            model.base_mask_hard.copy_(base_hard)
-            model.base_mask_frozen = True
-            model.base_mask_logits.requires_grad_(False)
+            model.primary_mask_hard.copy_(primary_hard)
+            model.primary_mask_frozen = True
+            model.primary_mask_logits.requires_grad_(False)
 
-            if params["residual_gate_mode"] == "complement":
-                resid_hard = torch.ones_like(model.residual_mask_logits)
+            if params["complementary_gate_mode"] == "complement":
+                complementary_hard = torch.ones_like(model.complementary_mask_logits)
             else:
-                resid_hard = (1.0 - base_hard).clone()
-            model.residual_mask_hard.copy_(resid_hard)
-            model.residual_mask_frozen = True
-            model.residual_mask_logits.requires_grad_(False)
+                complementary_hard = (1.0 - primary_hard).clone()
+            model.complementary_mask_hard.copy_(complementary_hard)
+            model.complementary_mask_frozen = True
+            model.complementary_mask_logits.requires_grad_(False)
 
-    model.set_phase("base")
-    model.set_mode("base_only")
-    model.unfreeze_base()
-    model.unfreeze_base_routing()
-    model.freeze_residual()
-    model.freeze_residual_routing()
+    model.set_phase("primary")
+    model.set_mode("primary_only")
+    model.unfreeze_primary()
+    model.unfreeze_primary_routing()
+    model.freeze_complementary()
+    model.freeze_complementary_routing()
 
     optimizer = make_optimizer(
         model,
-        lr=params["lr_base"],
+        lr=params["lr_primary"],
         weight_decay=params["weight_decay"],
     )
 
-    history = {"stage1": [], "base_hard": [], "stage2": [], "resid_hard": []}
+    history = {"stage1": [], "primary_hard": [], "stage2": [], "complementary_hard": []}
 
     for _ in range(params["epochs_stage1"]):
         if task_kind in {"binary", "multiclass"}:
@@ -626,9 +626,9 @@ def fit_gh_anfis(
                 criterion,
                 optimizer,
                 device,
-                phase="base",
-                lambda_base=params["lambda_base_s1"],
-                lambda_resid=0.0,
+                phase="primary",
+                lambda_primary=params["lambda_primary_s1"],
+                lambda_complementary=0.0,
                 feature_names=list(feature_names),
                 binary_columns=binary_columns,
                 task=task_kind,
@@ -641,32 +641,32 @@ def fit_gh_anfis(
                 criterion,
                 optimizer,
                 device,
-                phase="base",
-                lambda_base=params["lambda_base_s1"],
-                lambda_resid=0.0,
+                phase="primary",
+                lambda_primary=params["lambda_primary_s1"],
+                lambda_complementary=0.0,
                 feature_names=list(feature_names),
                 binary_columns=binary_columns,
             )
             history["stage1"].append(loss)
 
-    base_hard_epochs = int(params.get("base_hard_epochs", 0) or 0)
-    if base_hard_epochs > 0:
-        hard_threshold = params.get("base_mask_threshold", None)
-        model.freeze_base_routing(threshold=hard_threshold)
-        model.set_phase("base")
-        model.set_mode("base_only")
-        model.unfreeze_base()
-        model.freeze_residual()
-        model.freeze_residual_routing()
+    primary_hard_epochs = int(params.get("primary_hard_epochs", 0) or 0)
+    if primary_hard_epochs > 0:
+        hard_threshold = params.get("primary_mask_threshold", None)
+        model.freeze_primary_routing(threshold=hard_threshold)
+        model.set_phase("primary")
+        model.set_mode("primary_only")
+        model.unfreeze_primary()
+        model.freeze_complementary()
+        model.freeze_complementary_routing()
 
         optimizer = make_optimizer(
             model,
-            lr=params.get("lr_base_hard", params["lr_base"]),
+            lr=params.get("lr_primary_hard", params["lr_primary"]),
             weight_decay=params["weight_decay"],
         )
-        lambda_base_hard = params.get("lambda_base_hard", 0.0)
+        lambda_primary_hard = params.get("lambda_primary_hard", 0.0)
 
-        for _ in range(base_hard_epochs):
+        for _ in range(primary_hard_epochs):
             if task_kind in {"binary", "multiclass"}:
                 loss_tuple = train_one_epoch_dual_cls(
                     model,
@@ -674,15 +674,15 @@ def fit_gh_anfis(
                     criterion,
                     optimizer,
                     device,
-                    phase="base",
-                    lambda_base=lambda_base_hard,
-                    lambda_resid=0.0,
+                    phase="primary",
+                    lambda_primary=lambda_primary_hard,
+                    lambda_complementary=0.0,
                     lambda_bimodal=0.0,
                     feature_names=list(feature_names),
                     binary_columns=binary_columns,
                     task=task_kind,
                 )
-                history["base_hard"].append(loss_tuple[0])
+                history["primary_hard"].append(loss_tuple[0])
             else:
                 loss = train_one_epoch_dual_reg(
                     model,
@@ -690,26 +690,26 @@ def fit_gh_anfis(
                     criterion,
                     optimizer,
                     device,
-                    phase="base",
-                    lambda_base=lambda_base_hard,
-                    lambda_resid=0.0,
+                    phase="primary",
+                    lambda_primary=lambda_primary_hard,
+                    lambda_complementary=0.0,
                     lambda_bimodal=0.0,
                     feature_names=list(feature_names),
                     binary_columns=binary_columns,
                 )
-                history["base_hard"].append(loss)
+                history["primary_hard"].append(loss)
 
-    if params["enable_residual_branch"] and int(params["epochs_stage2"]) > 0:
-        model.set_phase("residual_complement")
+    if params["enable_complementary_branch"] and int(params["epochs_stage2"]) > 0:
+        model.set_phase("complementary_complement")
         model.set_mode("full")
-        model.freeze_base()
-        model.freeze_base_routing()
-        model.unfreeze_residual()
-        model.unfreeze_residual_routing()
+        model.freeze_primary()
+        model.freeze_primary_routing()
+        model.unfreeze_complementary()
+        model.unfreeze_complementary_routing()
 
         optimizer = make_optimizer(
             model,
-            lr=params["lr_residual"],
+            lr=params["lr_complementary"],
             weight_decay=params["weight_decay"],
         )
 
@@ -721,9 +721,9 @@ def fit_gh_anfis(
                     criterion,
                     optimizer,
                     device,
-                    phase="residual_complement",
-                    lambda_base=0.0,
-                    lambda_resid=params["lambda_resid_s2"],
+                    phase="complementary_complement",
+                    lambda_primary=0.0,
+                    lambda_complementary=params["lambda_complementary_s2"],
                     feature_names=list(feature_names),
                     binary_columns=binary_columns,
                     task=task_kind,
@@ -736,35 +736,35 @@ def fit_gh_anfis(
                     criterion,
                     optimizer,
                     device,
-                    phase="residual_complement",
-                    lambda_base=0.0,
-                    lambda_resid=params["lambda_resid_s2"],
+                    phase="complementary_complement",
+                    lambda_primary=0.0,
+                    lambda_complementary=params["lambda_complementary_s2"],
                     feature_names=list(feature_names),
                     binary_columns=binary_columns,
                 )
                 history["stage2"].append(loss)
 
-        residual_hard_epochs = int(params.get("residual_hard_epochs", 0) or 0)
-        if residual_hard_epochs > 0:
-            hard_threshold = params.get("residual_mask_threshold", None)
+        complementary_hard_epochs = int(params.get("complementary_hard_epochs", 0) or 0)
+        if complementary_hard_epochs > 0:
+            hard_threshold = params.get("complementary_mask_threshold", None)
             if hard_threshold is not None:
-                model.residual_mask_threshold = hard_threshold
+                model.complementary_mask_threshold = hard_threshold
 
-            model.freeze_residual_routing()
-            model.set_phase("residual_complement")
+            model.freeze_complementary_routing()
+            model.set_phase("complementary_complement")
             model.set_mode("full")
-            model.freeze_base()
-            model.freeze_base_routing()
-            model.unfreeze_residual()
+            model.freeze_primary()
+            model.freeze_primary_routing()
+            model.unfreeze_complementary()
 
             optimizer = make_optimizer(
                 model,
-                lr=params.get("lr_residual_hard", params["lr_residual"]),
+                lr=params.get("lr_complementary_hard", params["lr_complementary"]),
                 weight_decay=params["weight_decay"],
             )
-            lambda_resid_hard = params.get("lambda_resid_hard", 0.0)
+            lambda_complementary_hard = params.get("lambda_complementary_hard", 0.0)
 
-            for _ in range(residual_hard_epochs):
+            for _ in range(complementary_hard_epochs):
                 if task_kind in {"binary", "multiclass"}:
                     loss_tuple = train_one_epoch_dual_cls(
                         model,
@@ -772,15 +772,15 @@ def fit_gh_anfis(
                         criterion,
                         optimizer,
                         device,
-                        phase="residual_complement",
-                        lambda_base=0.0,
-                        lambda_resid=lambda_resid_hard,
+                        phase="complementary_complement",
+                        lambda_primary=0.0,
+                        lambda_complementary=lambda_complementary_hard,
                         lambda_bimodal=0.0,
                         feature_names=list(feature_names),
                         binary_columns=binary_columns,
                         task=task_kind,
                     )
-                    history["resid_hard"].append(loss_tuple[0])
+                    history["complementary_hard"].append(loss_tuple[0])
                 else:
                     loss = train_one_epoch_dual_reg(
                         model,
@@ -788,17 +788,17 @@ def fit_gh_anfis(
                         criterion,
                         optimizer,
                         device,
-                        phase="residual_complement",
-                        lambda_base=0.0,
-                        lambda_resid=lambda_resid_hard,
+                        phase="complementary_complement",
+                        lambda_primary=0.0,
+                        lambda_complementary=lambda_complementary_hard,
                         lambda_bimodal=0.0,
                         feature_names=list(feature_names),
                         binary_columns=binary_columns,
                     )
-                    history["resid_hard"].append(loss)
+                    history["complementary_hard"].append(loss)
     else:
-        model.set_phase("base")
-        model.set_mode("base_only")
+        model.set_phase("primary")
+        model.set_mode("primary_only")
 
     if verbose:
         plt.figure(figsize=(10, 5))
@@ -810,7 +810,7 @@ def fit_gh_anfis(
                 labels.extend([stage] * len(losses))
         
         plt.plot(all_losses, marker='.')
-        plt.title("GH-ANFIS Training Loss (All Stages)")
+        plt.title("GRS-ANFIS Training Loss (All Stages)")
         plt.xlabel("Total Epochs")
         plt.ylabel("Loss")
         

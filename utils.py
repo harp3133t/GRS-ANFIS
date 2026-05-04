@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from pathlib import Path
 import json
 
-from gh_config import GH_PARAM_DEFAULTS, build_gh_experiment_presets, normalize_gh_params
+from grs_config import GRS_PARAM_DEFAULTS, build_grs_experiment_presets, normalize_grs_params
 
 
 def set_deterministic(seed):
@@ -66,12 +66,12 @@ def pick_params(source, dataset_key, dataset_name):
             return value
     return source.get("default")
 
-def load_gh_params(dataset_key, dataset_name):
-    source = load_params("./hyper_parameter/best_GH-ANFIS_HP.json")
+def load_grs_params(dataset_key, dataset_name):
+    source = load_params("./hyper_parameter/best_GRS-ANFIS_HP.json")
     picked = pick_params(source, dataset_key, dataset_name) or {}
-    merged = dict(GH_PARAM_DEFAULTS)
+    merged = dict(GRS_PARAM_DEFAULTS)
     merged.update(picked)
-    return normalize_gh_params(merged)
+    return normalize_grs_params(merged)
 
 
 def load_ga_params(dataset_key, dataset_name):

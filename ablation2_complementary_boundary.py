@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Ablation #2: GH-ANFIS complementary(residual) boundary-sample flip analysis.
+Ablation #2: GRS-ANFIS complementary boundary-sample flip analysis.
 
 Goal:
-- Compare GH-ANFIS(base_only) vs GH-ANFIS(full)
+- Compare GRS-ANFIS(primary_only) vs GRS-ANFIS(full)
 - Count per-sample flips on boundary samples (Q1 confidence bin):
   wrong->right, right->wrong, net_gain
 """
@@ -33,7 +33,7 @@ from data import (
     load_spambase_data,
     load_vowel_data,
 )
-from model import GH_ANFIS
+from model import GRS_ANFIS
 
 
 DATASET_ORDER: List[str] = [
@@ -140,7 +140,7 @@ class DatasetBundle:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ablation #2: GH-ANFIS complementary boundary flip-count analysis."
+        description="Ablation #2: GRS-ANFIS complementary boundary flip-count analysis."
     )
     parser.add_argument("--mode", type=str, default="no_mi", choices=["no_mi"])
     parser.add_argument("--weight-root", type=str, default="hyper_parameter/cv_weights")
@@ -430,7 +430,7 @@ def _load_dataset_bundle_maincode(dataset_name: str) -> DatasetBundle:
     X_df, y = drop_nan_targets(X_df, y)
     X_df = X_df.copy()
 
-    # Historical GH payloads use x0..xN feature names for Gisette.
+    # Historical GRS payloads use x0..xN feature names for Gisette.
     if dataset_name == "Gisette" and all(
         isinstance(col, (int, np.integer)) for col in X_df.columns
     ):
@@ -481,18 +481,18 @@ def _load_dataset_bundle(dataset_name: str, data_root: Path) -> DatasetBundle:
         ) from maincode_exc
 
 
-def _dataset_key_for_mode(base_key: str, mode: str) -> str:
+def _dataset_key_for_mode(primary_key: str, mode: str) -> str:
     if mode == "no_mi":
-        return base_key
-    return f"{base_key}__{mode}"
+        return primary_key
+    return f"{primary_key}__{mode}"
 
 
-def _candidate_dataset_keys_for_mode(base_key: str, mode: str) -> List[str]:
+def _candidate_dataset_keys_for_mode(primary_key: str, mode: str) -> List[str]:
     candidates: List[str] = []
     if mode == "no_mi":
-        candidates.extend([f"{base_key}__{mode}", base_key])
+        candidates.extend([f"{primary_key}__{mode}", primary_key])
     else:
-        candidates.extend([f"{base_key}__{mode}", base_key])
+        candidates.extend([f"{primary_key}__{mode}", primary_key])
 
     deduped: List[str] = []
     for key in candidates:
@@ -502,11 +502,11 @@ def _candidate_dataset_keys_for_mode(base_key: str, mode: str) -> List[str]:
 
 
 def _resolve_payload_path(
-    weight_root: Path, base_key: str, mode: str, fold_idx: int
+    weight_root: Path, primary_key: str, mode: str, fold_idx: int
 ) -> Tuple[str, Path]:
     attempted: List[str] = []
-    for dataset_key in _candidate_dataset_keys_for_mode(base_key, mode):
-        payload_path = weight_root / dataset_key / f"fold_{int(fold_idx):02d}" / "gh_anfis.pt"
+    for dataset_key in _candidate_dataset_keys_for_mode(primary_key, mode):
+        payload_path = weight_root / dataset_key / f"fold_{int(fold_idx):02d}" / "grs_anfis.pt"
         attempted.append(str(payload_path))
         if payload_path.is_file():
             return dataset_key, payload_path
@@ -564,25 +564,25 @@ def _apply_payload_scaler_strict(X_df: pd.DataFrame, payload: Dict[str, Any]) ->
     return (X_np - mean_np) / scale_np
 
 
-def _build_gh_model(payload: Dict[str, Any], device: torch.device) -> GH_ANFIS:
+def _build_grs_model(payload: Dict[str, Any], device: torch.device) -> GRS_ANFIS:
     params = payload.get("params") or {}
-    model = GH_ANFIS(
+    model = GRS_ANFIS(
         n_features=int(payload["n_features"]),
         n_outputs=int(payload["n_outputs"]),
-        residual_rules=int(params.get("residual_rules", 8)),
-        base_rules=int(params.get("base_rules", 4)),
+        complementary_rules=int(params.get("complementary_rules", 8)),
+        primary_rules=int(params.get("primary_rules", 4)),
         mf_per_feature=int(params.get("mf_per_feature", 2)),
         device=device,
     ).to(device)
     model.load_state_dict(payload["state_dict"])
     model.eval()
     if hasattr(model, "set_phase"):
-        model.set_phase("residual_complement")
+        model.set_phase("complementary_complement")
     return model
 
 
 def _predict_and_confidence(
-    model: GH_ANFIS, X_np: np.ndarray, task_kind: str, mode: str, device: torch.device
+    model: GRS_ANFIS, X_np: np.ndarray, task_kind: str, mode: str, device: torch.device
 ) -> Tuple[np.ndarray, np.ndarray]:
     if hasattr(model, "set_mode"):
         model.set_mode(mode)
@@ -640,25 +640,25 @@ def _aggregate_q1_by_dataset(
 
     rows: List[Dict[str, Any]] = []
     for dataset_name in DATASET_ORDER:
-        sub = ok_q1[ok_q1["dataset"] == dataset_name]
-        n_samples = int(sub["n_samples"].sum()) if len(sub) > 0 else 0
-        w2r = int(sub["wrong_to_right"].sum()) if len(sub) > 0 else 0
-        r2w = int(sub["right_to_wrong"].sum()) if len(sub) > 0 else 0
-        sr = int(sub["stable_right"].sum()) if len(sub) > 0 else 0
-        sw = int(sub["stable_wrong"].sum()) if len(sub) > 0 else 0
+        subset = ok_q1[ok_q1["dataset"] == dataset_name]
+        n_samples = int(subset["n_samples"].sum()) if len(subset) > 0 else 0
+        w2r = int(subset["wrong_to_right"].sum()) if len(subset) > 0 else 0
+        r2w = int(subset["right_to_wrong"].sum()) if len(subset) > 0 else 0
+        sr = int(subset["stable_right"].sum()) if len(subset) > 0 else 0
+        sw = int(subset["stable_wrong"].sum()) if len(subset) > 0 else 0
         net = w2r - r2w
 
-        base_correct = sr + r2w
-        base_wrong = w2r + sw
+        primary_correct = sr + r2w
+        primary_wrong = w2r + sw
         full_correct = sr + w2r
         net_rate = (net / n_samples) if n_samples > 0 else np.nan
-        base_acc = (base_correct / n_samples) if n_samples > 0 else np.nan
+        primary_acc = (primary_correct / n_samples) if n_samples > 0 else np.nan
         full_acc = (full_correct / n_samples) if n_samples > 0 else np.nan
         help_rate = (w2r / n_samples) if n_samples > 0 else np.nan
         harm_rate = (r2w / n_samples) if n_samples > 0 else np.nan
-        error_recovery_rate = (w2r / base_wrong) if base_wrong > 0 else np.nan
+        error_recovery_rate = (w2r / primary_wrong) if primary_wrong > 0 else np.nan
 
-        n_success_folds = int(sub["fold"].nunique()) if len(sub) > 0 else 0
+        n_success_folds = int(subset["fold"].nunique()) if len(subset) > 0 else 0
         failed = len(fail_map.get(dataset_name, set()))
 
         rows.append(
@@ -675,13 +675,13 @@ def _aggregate_q1_by_dataset(
                 "stable_wrong": sw,
                 "net_gain": net,
                 "net_rate": net_rate,
-                "base_acc_q1": base_acc,
+                "primary_acc_q1": primary_acc,
                 "full_acc_q1": full_acc,
                 "help_rate_q1": help_rate,
                 "harm_rate_q1": harm_rate,
                 "error_recovery_rate_q1": error_recovery_rate,
-                "q1_ratio_mean": float(sub["bin_ratio"].mean()) if len(sub) > 0 else np.nan,
-                "q1_ratio_std": float(sub["bin_ratio"].std(ddof=0)) if len(sub) > 0 else np.nan,
+                "q1_ratio_mean": float(subset["bin_ratio"].mean()) if len(subset) > 0 else np.nan,
+                "q1_ratio_std": float(subset["bin_ratio"].std(ddof=0)) if len(subset) > 0 else np.nan,
             }
         )
 
@@ -696,8 +696,8 @@ def _aggregate_q1_overall(q1_by_dataset: pd.DataFrame) -> pd.DataFrame:
     sw = int(q1_by_dataset["stable_wrong"].sum())
     net = w2r - r2w
 
-    base_correct = sr + r2w
-    base_wrong = w2r + sw
+    primary_correct = sr + r2w
+    primary_wrong = w2r + sw
     full_correct = sr + w2r
 
     row = {
@@ -709,11 +709,11 @@ def _aggregate_q1_overall(q1_by_dataset: pd.DataFrame) -> pd.DataFrame:
         "stable_wrong": sw,
         "net_gain": net,
         "net_rate": (net / n_samples) if n_samples > 0 else np.nan,
-        "base_acc_q1": (base_correct / n_samples) if n_samples > 0 else np.nan,
+        "primary_acc_q1": (primary_correct / n_samples) if n_samples > 0 else np.nan,
         "full_acc_q1": (full_correct / n_samples) if n_samples > 0 else np.nan,
         "help_rate_q1": (w2r / n_samples) if n_samples > 0 else np.nan,
         "harm_rate_q1": (r2w / n_samples) if n_samples > 0 else np.nan,
-        "error_recovery_rate_q1": (w2r / base_wrong) if base_wrong > 0 else np.nan,
+        "error_recovery_rate_q1": (w2r / primary_wrong) if primary_wrong > 0 else np.nan,
         "datasets_with_success": int((q1_by_dataset["q1_n_samples"] > 0).sum()),
     }
     return pd.DataFrame([row])
@@ -737,7 +737,7 @@ def _repro_check(
     available_summary_datasets = set(
         summary_df.loc[
             (summary_df["mode"] == "no_mi")
-            & (summary_df["model"].isin(["GH-ANFIS(base)", "GH-ANFIS(full)"])),
+            & (summary_df["model"].isin(["GRS-ANFIS(primary)", "GRS-ANFIS(full)"])),
             "dataset",
         ]
         .astype(str)
@@ -763,17 +763,17 @@ def _repro_check(
             all_pass = False
             continue
 
-        exp_base = summary_df[
+        exp_primary = summary_df[
             (summary_df["dataset"] == dataset)
             & (summary_df["mode"] == "no_mi")
-            & (summary_df["model"] == "GH-ANFIS(base)")
+            & (summary_df["model"] == "GRS-ANFIS(primary)")
         ]
         exp_full = summary_df[
             (summary_df["dataset"] == dataset)
             & (summary_df["mode"] == "no_mi")
-            & (summary_df["model"] == "GH-ANFIS(full)")
+            & (summary_df["model"] == "GRS-ANFIS(full)")
         ]
-        if len(exp_base) == 0 or len(exp_full) == 0:
+        if len(exp_primary) == 0 or len(exp_full) == 0:
             result["datasets"][dataset] = {
                 "status": "skipped",
                 "reason": "expected_rows_not_found_in_summary",
@@ -782,27 +782,27 @@ def _repro_check(
             continue
 
         checked_any = True
-        exp_base_row = exp_base.iloc[0]
+        exp_primary_row = exp_primary.iloc[0]
         exp_full_row = exp_full.iloc[0]
 
-        obs_base_acc = float(obs["base_acc"].mean())
-        obs_base_f1 = float(obs["base_f1"].mean())
+        obs_primary_acc = float(obs["primary_acc"].mean())
+        obs_primary_f1 = float(obs["primary_f1"].mean())
         obs_full_acc = float(obs["full_acc"].mean())
         obs_full_f1 = float(obs["full_f1"].mean())
 
         cmp_payload = {
-            "obs_base_acc": obs_base_acc,
-            "obs_base_f1": obs_base_f1,
+            "obs_primary_acc": obs_primary_acc,
+            "obs_primary_f1": obs_primary_f1,
             "obs_full_acc": obs_full_acc,
             "obs_full_f1": obs_full_f1,
-            "exp_base_acc": float(exp_base_row["acc_mean"]),
-            "exp_base_f1": float(exp_base_row["f1_mean"]),
+            "exp_primary_acc": float(exp_primary_row["acc_mean"]),
+            "exp_primary_f1": float(exp_primary_row["f1_mean"]),
             "exp_full_acc": float(exp_full_row["acc_mean"]),
             "exp_full_f1": float(exp_full_row["f1_mean"]),
         }
         diffs = {
-            "base_acc_abs_diff": abs(cmp_payload["obs_base_acc"] - cmp_payload["exp_base_acc"]),
-            "base_f1_abs_diff": abs(cmp_payload["obs_base_f1"] - cmp_payload["exp_base_f1"]),
+            "primary_acc_abs_diff": abs(cmp_payload["obs_primary_acc"] - cmp_payload["exp_primary_acc"]),
+            "primary_f1_abs_diff": abs(cmp_payload["obs_primary_f1"] - cmp_payload["exp_primary_f1"]),
             "full_acc_abs_diff": abs(cmp_payload["obs_full_acc"] - cmp_payload["exp_full_acc"]),
             "full_f1_abs_diff": abs(cmp_payload["obs_full_f1"] - cmp_payload["exp_full_f1"]),
         }
@@ -932,7 +932,7 @@ def run_ablation(
                         "stable_wrong": np.nan,
                         "net_gain": np.nan,
                         "net_rate": np.nan,
-                        "base_acc_bin": np.nan,
+                        "primary_acc_bin": np.nan,
                         "full_acc_bin": np.nan,
                         "error_recovery_rate_bin": np.nan,
                         "boundary_conf_quantile": np.nan,
@@ -970,7 +970,7 @@ def run_ablation(
             try:
                 dataset_key_by_mode, payload_path = _resolve_payload_path(
                     weight_root=weight_root_path,
-                    base_key=bundle.dataset_key,
+                    primary_key=bundle.dataset_key,
                     mode=mode,
                     fold_idx=fold_idx,
                 )
@@ -991,13 +991,13 @@ def run_ablation(
                 X_val_aligned = _align_features_strict(X_val_df, feature_names)
                 X_val_scaled = _apply_payload_scaler_strict(X_val_aligned, payload)
 
-                model = _build_gh_model(payload, device=runtime_device)
+                model = _build_grs_model(payload, device=runtime_device)
 
-                base_pred, base_conf = _predict_and_confidence(
+                primary_pred, primary_conf = _predict_and_confidence(
                     model=model,
                     X_np=X_val_scaled,
                     task_kind=task_kind,
-                    mode="base_only",
+                    mode="primary_only",
                     device=runtime_device,
                 )
                 full_pred, _full_conf = _predict_and_confidence(
@@ -1008,12 +1008,12 @@ def run_ablation(
                     device=runtime_device,
                 )
 
-                base_correct = base_pred == y_val
+                primary_correct = primary_pred == y_val
                 full_correct = full_pred == y_val
 
-                base_acc_fold = float(accuracy_score(y_val, base_pred))
+                primary_acc_fold = float(accuracy_score(y_val, primary_pred))
                 full_acc_fold = float(accuracy_score(y_val, full_pred))
-                base_f1_fold = _compute_f1(y_val, base_pred, task_kind=task_kind)
+                primary_f1_fold = _compute_f1(y_val, primary_pred, task_kind=task_kind)
                 full_f1_fold = _compute_f1(y_val, full_pred, task_kind=task_kind)
 
                 fold_model_metrics.append(
@@ -1022,16 +1022,16 @@ def run_ablation(
                         "fold": int(fold_idx),
                         "status": "ok",
                         "task_kind": task_kind,
-                        "base_acc": base_acc_fold,
-                        "base_f1": base_f1_fold,
+                        "primary_acc": primary_acc_fold,
+                        "primary_f1": primary_f1_fold,
                         "full_acc": full_acc_fold,
                         "full_f1": full_f1_fold,
                     }
                 )
 
-                bins = _assign_rank_bins(base_conf, n_bins=n_bins)
+                bins = _assign_rank_bins(primary_conf, n_bins=n_bins)
                 n_val = int(len(y_val))
-                boundary_quantile = float(np.quantile(base_conf, float(boundary_bin) / float(n_bins)))
+                boundary_quantile = float(np.quantile(primary_conf, float(boundary_bin) / float(n_bins)))
 
                 bin_mass_total = 0
                 for bin_id in range(1, n_bins + 1):
@@ -1039,10 +1039,10 @@ def run_ablation(
                     n_bin = int(np.sum(idx))
                     bin_mass_total += n_bin
 
-                    w2r = int(np.sum((~base_correct) & full_correct & idx))
-                    r2w = int(np.sum(base_correct & (~full_correct) & idx))
-                    stable_right = int(np.sum(base_correct & full_correct & idx))
-                    stable_wrong = int(np.sum((~base_correct) & (~full_correct) & idx))
+                    w2r = int(np.sum((~primary_correct) & full_correct & idx))
+                    r2w = int(np.sum(primary_correct & (~full_correct) & idx))
+                    stable_right = int(np.sum(primary_correct & full_correct & idx))
+                    stable_wrong = int(np.sum((~primary_correct) & (~full_correct) & idx))
 
                     if (w2r + r2w + stable_right + stable_wrong) != n_bin:
                         raise ValueError(
@@ -1051,17 +1051,17 @@ def run_ablation(
                         )
 
                     net = int(w2r - r2w)
-                    base_wrong_bin = int(w2r + stable_wrong)
+                    primary_wrong_bin = int(w2r + stable_wrong)
                     bin_ratio = (n_bin / n_val) if n_val > 0 else np.nan
                     net_rate = (net / n_bin) if n_bin > 0 else np.nan
-                    base_acc_bin = (
-                        float(np.sum(base_correct & idx)) / float(n_bin) if n_bin > 0 else np.nan
+                    primary_acc_bin = (
+                        float(np.sum(primary_correct & idx)) / float(n_bin) if n_bin > 0 else np.nan
                     )
                     full_acc_bin = (
                         float(np.sum(full_correct & idx)) / float(n_bin) if n_bin > 0 else np.nan
                     )
                     error_recovery_rate_bin = (
-                        float(w2r) / float(base_wrong_bin) if base_wrong_bin > 0 else np.nan
+                        float(w2r) / float(primary_wrong_bin) if primary_wrong_bin > 0 else np.nan
                     )
 
                     fold_rows.append(
@@ -1085,7 +1085,7 @@ def run_ablation(
                             "stable_wrong": int(stable_wrong),
                             "net_gain": int(net),
                             "net_rate": net_rate,
-                            "base_acc_bin": base_acc_bin,
+                            "primary_acc_bin": primary_acc_bin,
                             "full_acc_bin": full_acc_bin,
                             "error_recovery_rate_bin": error_recovery_rate_bin,
                             "boundary_conf_quantile": boundary_quantile,
@@ -1101,7 +1101,7 @@ def run_ablation(
                 q1_ratio = q1_count / float(n_val) if n_val > 0 else np.nan
                 _log(
                     verbose,
-                    f"  fold {fold_idx:02d} ok | n_val={n_val} | base_acc={base_acc_fold:.4f} "
+                    f"  fold {fold_idx:02d} ok | n_val={n_val} | primary_acc={primary_acc_fold:.4f} "
                     f"| full_acc={full_acc_fold:.4f} | q1_count={q1_count} ({q1_ratio:.3f})",
                 )
 
@@ -1139,7 +1139,7 @@ def run_ablation(
                         "stable_wrong": np.nan,
                         "net_gain": np.nan,
                         "net_rate": np.nan,
-                        "base_acc_bin": np.nan,
+                        "primary_acc_bin": np.nan,
                         "full_acc_bin": np.nan,
                         "error_recovery_rate_bin": np.nan,
                         "boundary_conf_quantile": np.nan,
@@ -1151,8 +1151,8 @@ def run_ablation(
                         "fold": int(fold_idx),
                         "status": "failed",
                         "task_kind": np.nan,
-                        "base_acc": np.nan,
-                        "base_f1": np.nan,
+                        "primary_acc": np.nan,
+                        "primary_f1": np.nan,
                         "full_acc": np.nan,
                         "full_f1": np.nan,
                     }
