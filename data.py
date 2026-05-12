@@ -275,14 +275,48 @@ def load_openml_dataset(
 
 
 def load_vowel_data():
-    X_df, y, encoder, feature_names, info = load_openml_dataset(
-                    data_id=307,
-                    one_hot=True,
-                    task="classification",
-                    max_classes=50,
-                    report=False,
-                )
-    return X_df, y, feature_names
+    """Load Vowel with the legacy 29-dimensional encoded representation.
+
+    The local OpenML snapshot stores the 10 acoustic features, speaker, sex, and
+    target, but it omits the original Deterding train/test indicator.  The legacy
+    experiments used that indicator as an additional categorical column, with the
+    standard 528/462 Train/Test split preserved before cross-validation.  We
+    reconstruct it here so all rebuttal reruns use the same 29-dimensional input:
+    10 numeric features + 15 speaker dummies + 2 sex dummies + 2 split dummies.
+    """
+    snapshot_path = _local_snapshot_path("vowel_openml_307.csv")
+    if snapshot_path is None:
+        raise FileNotFoundError("Missing local Vowel snapshot: data/vowel_openml_307.csv")
+
+    df = pd.read_csv(snapshot_path)
+    if "target" not in df.columns:
+        raise ValueError(f"Snapshot is missing required 'target' column: {snapshot_path}")
+
+    X_df = df.drop(columns=["target"]).copy()
+    y_raw = df["target"]
+    if "Train_or_Test" not in X_df.columns:
+        split = np.where(np.arange(len(X_df)) < 528, "Train", "Test")
+        X_df.insert(0, "Train_or_Test", split)
+
+    categorical_cols = ["Train_or_Test", "Speaker_Number", "Sex"]
+    X_encoded = pd.get_dummies(
+        X_df,
+        columns=categorical_cols,
+        prefix=categorical_cols,
+        prefix_sep="_",
+        drop_first=False,
+        dummy_na=False,
+        dtype="float32",
+    )
+    X_encoded = X_encoded.apply(pd.to_numeric, errors="coerce").fillna(0).astype("float32")
+
+    y, encoder, task_kind, n_outputs = prepare_targets(
+        y_raw, task="classification", max_classes=50
+    )
+    feature_names = list(X_encoded.columns)
+    if X_encoded.shape[1] != 29:
+        raise ValueError(f"Expected legacy Vowel dimension 29, got {X_encoded.shape[1]}")
+    return X_encoded, y, feature_names
 
 def load_spambase_data():
     X_df, y, encoder, feature_names, info = load_ucirepo_dataset(

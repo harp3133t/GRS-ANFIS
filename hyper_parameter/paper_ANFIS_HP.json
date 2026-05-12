@@ -1,0 +1,12 @@
+{
+  "default": {
+    "lr": 0.1,
+    "n_rules": 30,
+    "epochs": 100,
+    "mfs_per_input": 3,
+    "selected_features": [],
+    "rule_init_mode": "legacy",
+    "rule_seed": 0,
+    "firing_mode": "htsk"
+  }
+}

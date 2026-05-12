@@ -1,0 +1,65 @@
+{
+  "cross_validation": {
+    "n_folds": 5,
+    "shuffle": true,
+    "random_state": 42,
+    "report": "mean +/- standard deviation across folds"
+  },
+  "parameter_ranges": [
+    {
+      "hyperparameter": "lambda_primary, lambda_complementary",
+      "role": "L1 sparsity penalty",
+      "typical_range": "1e-4 to 1e-1"
+    },
+    {
+      "hyperparameter": "tau_primary, tau_complementary",
+      "role": "Hard gate thresholds",
+      "typical_range": "0.3 to 0.7, usually 0.5"
+    },
+    {
+      "hyperparameter": "n",
+      "role": "Membership functions per input",
+      "typical_range": "2 to 5"
+    },
+    {
+      "hyperparameter": "learning_rate_eta",
+      "role": "Optimizer step size",
+      "typical_range": "1e-4 to 1e-2"
+    },
+    {
+      "hyperparameter": "max_epochs_s1_s2",
+      "role": "Stage-wise maximum epochs",
+      "typical_range": "10 to 100"
+    }
+  ],
+  "svm": {
+    "C": 1.0,
+    "gamma": "scale",
+    "kernel": "rbf",
+    "probability": true,
+    "random_state": 42
+  },
+  "ga_search": {
+    "population": 20,
+    "generations": 10,
+    "mutation_percent": 10,
+    "selection": "roulette_wheel_shifted_fitness"
+  },
+  "pso_search": {
+    "particles": 20,
+    "iterations": 10
+  },
+  "h_anfis_split": {
+    "split_rule": "random_half",
+    "seed_base": 42,
+    "seed_offset": 101,
+    "fold_multiplier": 997,
+    "minimum_features": 2
+  },
+  "grs_fixed": {
+    "primary_mask_threshold": 0.5,
+    "complementary_mask_threshold": 0.5,
+    "lambda_primary_hard": 0.0,
+    "lambda_complementary_hard": 0.0
+  }
+}

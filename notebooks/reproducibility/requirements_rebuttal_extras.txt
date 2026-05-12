@@ -1,0 +1,7 @@
+xgboost>=2.0
+lightgbm>=4.0
+catboost>=1.2
+interpret>=0.6
+shap>=0.45
+lime>=0.2
+openpyxl>=3.1

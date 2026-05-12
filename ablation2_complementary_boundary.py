@@ -143,7 +143,11 @@ def parse_args() -> argparse.Namespace:
         description="Ablation #2: GRS-ANFIS complementary boundary flip-count analysis."
     )
     parser.add_argument("--mode", type=str, default="no_mi", choices=["no_mi"])
-    parser.add_argument("--weight-root", type=str, default="hyper_parameter/cv_weights")
+    parser.add_argument(
+        "--weight-root",
+        type=str,
+        default="output/reproducible_paper_tables/model_artifacts/01_main_neuro_fuzzy_and_svm_experiments/cv_weights",
+    )
     parser.add_argument("--data-root", type=str, default="data")
     parser.add_argument("--n-folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
@@ -157,6 +161,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
     )
+    parser.add_argument("--datasets", nargs="*", default=None)
     return parser.parse_args()
 
 
@@ -577,6 +582,12 @@ def _build_grs_model(payload: Dict[str, Any], device: torch.device) -> GRS_ANFIS
         primary_rules=int(params.get("primary_rules", 4)),
         mf_per_feature=int(params.get("mf_per_feature", 2)),
         device=device,
+        complementary_gate_mode=str(params.get("complementary_gate_mode", "complement")),
+        rule_init_mode=str(params.get("rule_init_mode", "balanced")),
+        rule_seed=int(params.get("rule_seed", 0)),
+        firing_mode=str(params.get("firing_mode", "htsk")),
+        use_input_norm=bool(params.get("use_input_norm", False)),
+        enable_complementary_branch=bool(params.get("enable_complementary_branch", True)),
     ).to(device)
     model.load_state_dict(payload["state_dict"])
     model.eval()
@@ -628,8 +639,28 @@ def _compute_f1(y_true: np.ndarray, y_pred: np.ndarray, task_kind: str) -> float
     return float(f1_score(y_true, y_pred, average=avg, zero_division=0))
 
 
+def _parse_dataset_names(dataset_names: Optional[Sequence[str]]) -> List[str]:
+    if not dataset_names:
+        return list(DATASET_ORDER)
+    display_to_key = {
+        "Breast Cancer": "Breast_Cancer_Wisconsin_(Original)",
+    }
+    parsed: List[str] = []
+    for name in dataset_names:
+        resolved = display_to_key.get(str(name), str(name))
+        if resolved not in DATASET_ORDER:
+            raise ValueError(f"Unsupported dataset: {name}")
+        if resolved not in parsed:
+            parsed.append(resolved)
+    return parsed
+
+
 def _aggregate_q1_by_dataset(
-    fold_df: pd.DataFrame, failed_folds: Sequence[Dict[str, Any]], n_folds: int, boundary_bin: int
+    fold_df: pd.DataFrame,
+    failed_folds: Sequence[Dict[str, Any]],
+    n_folds: int,
+    boundary_bin: int,
+    dataset_order: Sequence[str],
 ) -> pd.DataFrame:
     ok_q1 = fold_df[
         (fold_df["status"] == "ok") & (fold_df["bin_id"] == int(boundary_bin))
@@ -643,7 +674,7 @@ def _aggregate_q1_by_dataset(
             fail_map.setdefault(ds, set()).add(int(fold))
 
     rows: List[Dict[str, Any]] = []
-    for dataset_name in DATASET_ORDER:
+    for dataset_name in dataset_order:
         subset = ok_q1[ok_q1["dataset"] == dataset_name]
         n_samples = int(subset["n_samples"].sum()) if len(subset) > 0 else 0
         w2r = int(subset["wrong_to_right"].sum()) if len(subset) > 0 else 0
@@ -848,7 +879,7 @@ def _log(verbose: bool, message: str = "") -> None:
 def run_ablation(
     *,
     mode: str = "no_mi",
-    weight_root: str = "hyper_parameter/cv_weights",
+    weight_root: str = "output/reproducible_paper_tables/model_artifacts/01_main_neuro_fuzzy_and_svm_experiments/cv_weights",
     data_root: str = "data",
     n_folds: int = 5,
     seed: int = 42,
@@ -858,6 +889,7 @@ def run_ablation(
     summary_check_path: Optional[str] = None,
     project_root: Optional[Path] = None,
     device: Optional[Any] = None,
+    dataset_names: Optional[Sequence[str]] = None,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """Run the boundary-sample Q1 ablation and return in-memory results for notebooks."""
@@ -877,6 +909,7 @@ def run_ablation(
         )
     if n_folds < 2:
         raise ValueError(f"n_folds must be >=2. got={n_folds}")
+    dataset_order = _parse_dataset_names(dataset_names)
 
     _ensure_runtime_cache_paths(data_root_path, project_root)
     out_dir_path.mkdir(parents=True, exist_ok=True)
@@ -898,7 +931,7 @@ def run_ablation(
     fold_model_metrics: List[Dict[str, Any]] = []
     dataset_sources: Dict[str, str] = {}
 
-    for dataset_name in DATASET_ORDER:
+    for dataset_name in dataset_order:
         _log(verbose, f"\n[Dataset] {dataset_name}")
         try:
             bundle = _load_dataset_bundle(dataset_name, data_root_path)
@@ -1112,20 +1145,24 @@ def run_ablation(
             except Exception as exc:
                 err = f"{type(exc).__name__}: {exc}"
                 _log(verbose, f"  fold {fold_idx:02d} failed | {err}")
+                failed_dataset_key = locals().get(
+                    "dataset_key_by_mode", _dataset_key_for_mode(bundle.dataset_key, mode)
+                )
+                failed_payload_path = locals().get("payload_path", None)
                 failed_folds.append(
                     {
                         "dataset": dataset_name,
-                        "dataset_key": dataset_key_by_mode,
+                        "dataset_key": failed_dataset_key,
                         "fold": int(fold_idx),
                         "stage": "fold_eval",
-                        "payload_path": str(payload_path),
+                        "payload_path": str(failed_payload_path) if failed_payload_path is not None else "",
                         "error": err,
                     }
                 )
                 fold_rows.append(
                     {
                         "dataset": dataset_name,
-                        "dataset_key": dataset_key_by_mode,
+                        "dataset_key": failed_dataset_key,
                         "mode": mode,
                         "fold": int(fold_idx),
                         "task_kind": np.nan,
@@ -1170,6 +1207,7 @@ def run_ablation(
         failed_folds=failed_folds,
         n_folds=n_folds,
         boundary_bin=boundary_bin,
+        dataset_order=dataset_order,
     )
     q1_overall_df = _aggregate_q1_overall(q1_by_dataset_df)
 
@@ -1199,7 +1237,7 @@ def run_ablation(
     run_config = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
-        "dataset_order": DATASET_ORDER,
+        "dataset_order": dataset_order,
         "dataset_keys": DATASET_KEYS,
         "dataset_sources": dataset_sources,
         "n_folds": int(n_folds),
@@ -1287,6 +1325,7 @@ def main() -> None:
         out_dir=args.out_dir,
         summary_check_path=args.summary_check_path,
         project_root=Path(__file__).resolve().parent,
+        dataset_names=args.datasets,
         verbose=True,
     )
 

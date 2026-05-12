@@ -1,37 +1,13 @@
-# Python/runtime artifacts
 __pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
+*.pyc
 .ipynb_checkpoints/
 .cache/
-.agents/
-.codex/
+*.pt
+*.pth
+*.ckpt
 
-# Local environments
-.venv/
-venv/
-env/
-
-# Datasets are not distributed with the public code release
+# External dataset snapshots are recreated by
+# notebooks/reproducibility/00_download_datasets.ipynb.
 data/*
 !data/README.md
 
-# Model checkpoints, serialized estimators, and generated result artifacts
-hyper_parameter/cv_weights/
-hyper_parameter/manual_bcwd_runs/
-hyper_parameter/*.csv
-*.pt
-*.pth
-*.joblib
-
-# Generated experiment outputs and rebuttal artifact bundles
-output/
-outputs/
-rebuttal_full_completion/
-
-# Keep only the two public notebooks in git
-notebooks/*.ipynb
-!notebooks/01_main_performance.ipynb
-!notebooks/02_additional_experiments.ipynb
-test.ipynb

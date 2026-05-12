@@ -1,0 +1,1242 @@
+#!/usr/bin/env python3
+"""Direct experiment pipeline for paper table reproducibility.
+
+This module is the backend used by notebooks/reproducibility/*.ipynb.  It is
+intentionally table-oriented: every public table is produced from a raw direct
+experiment output written in the same output tree, not from hard-coded rows or a
+pre-existing summary artifact.
+
+The only acceptable inputs are source data snapshots, model/config code, and
+hyperparameter JSON/Markdown.  Expensive experiments can be run one notebook at
+a time, but the generated CSVs always keep fold-level rows next to summaries so
+that manuscript numbers can be audited.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import json
+import math
+import os
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import joblib
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data import (  # noqa: E402
+    coerce_numeric_frame,
+    drop_nan_targets,
+    load_bcwd_data,
+    load_gisette_data,
+    load_spambase_data,
+    load_vowel_data,
+)
+from grs_config import normalize_grs_params  # noqa: E402
+from learning import (  # noqa: E402
+    fit_grs_anfis,
+    fit_parallel_hier_anfis,
+    fit_tsk_anfis,
+    make_optimizer,
+    train_one_epoch_dual_cls,
+)
+from model import GRS_ANFIS  # noqa: E402
+from utils import build_loader, load_ga_params, load_grs_params, load_pso_params, set_deterministic  # noqa: E402
+from utils import (  # noqa: E402
+    load_anfis_params,
+    load_common_experiment_settings,
+    load_h_params,
+    load_svm_params,
+    load_tabular_baseline_candidates,
+)
+
+SEED = 42
+N_FOLDS = 5
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+OUT_ROOT = ROOT / 'output' / 'reproducible_paper_tables'
+
+DATASET_LOADERS = {
+    'Breast_Cancer_Wisconsin_(Original)': load_bcwd_data,
+    'Vowel': load_vowel_data,
+    'Spambase': load_spambase_data,
+    'Gisette': load_gisette_data,
+}
+DISPLAY_DATASET = {
+    'Breast_Cancer_Wisconsin_(Original)': 'Breast Cancer',
+    'Vowel': 'Vowel',
+    'Spambase': 'Spambase',
+    'Gisette': 'Gisette',
+}
+DATASET_BY_DISPLAY = {v: k for k, v in DISPLAY_DATASET.items()}
+ARTIFACT_DATASET_KEYS = {
+    'Breast_Cancer_Wisconsin_(Original)': 'Breast_Cancer_Wisconsin__Original_',
+    'Vowel': 'Vowel',
+    'Spambase': 'Spambase',
+    'Gisette': 'Gisette',
+}
+BCWD_FRIENDLY_FEATURES = {
+    'Clump_thickness': 'Clump thickness',
+    'Uniformity_of_cell_size': 'Cell size',
+    'Uniformity_of_cell_shape': 'Cell shape',
+    'Marginal_adhesion': 'Marginal adhesion',
+    'Single_epithelial_cell_size': 'Single epithelial cell size',
+    'Bare_nuclei': 'Bare nuclei',
+    'Bland_chromatin': 'Bland chromatin',
+    'Normal_nucleoli': 'Normal nucleoli',
+    'Mitoses': 'Mitoses',
+}
+
+PAPER_TABLE_MAP = [
+    (
+        '00_environment_and_data_audit.ipynb',
+        'Tables 1-6',
+        'Benchmark datasets and experiment hyperparameter/protocol tables',
+        'dataset dimensions plus hyperparameters read from hyper_parameter/*.json',
+        'output/reproducible_paper_tables/00_*.csv',
+    ),
+    (
+        '01_main_neuro_fuzzy_and_svm_experiments.ipynb',
+        'Tables 7-10',
+        'Vowel, Spambase, Breast Cancer, and Gisette performance/interpretability tables',
+        'ANFIS-family, SVM, and GRS-ANFIS fold metrics',
+        'output/reproducible_paper_tables/01_main_neuro_fuzzy_summary.csv',
+    ),
+    (
+        '08_saved_model_interpretability_from_checkpoints.ipynb',
+        'Tables 7-10',
+        'Nauck/HFSi interpretability-index column for the four dataset performance tables',
+        'loads saved fold checkpoints from Notebook 01 and computes Nauck/HFSi without retraining',
+        'output/reproducible_paper_tables/08_saved_model_interpretability_summary.csv',
+    ),
+    (
+        '02_tree_boosting_and_ebm_baselines.ipynb',
+        'Tables 7-10; Table A8',
+        'Modern tabular-baseline rows in the dataset performance tables and the supplemental full-metric summary',
+        'RF/HGB/XGBoost/LightGBM/CatBoost/EBM fold metrics',
+        'output/reproducible_paper_tables/02_tabular_baseline_summary.csv',
+    ),
+    (
+        '03_reviewer_table_package_rebuild.ipynb',
+        'Tables 1, 7-17, A1-A9 package',
+        'Manuscript-ready CSV table package assembled from direct notebook outputs',
+        'copies only tables generated by direct experiment notebooks; fails if a source table is missing',
+        'output/reproducible_paper_tables/manuscript_tables/*.csv',
+    ),
+    (
+        '04_ablation_robustness_and_htsk_analysis.ipynb',
+        'Tables 13-14; Tables A1-A6',
+        'Architecture, schedule, threshold, sparsity, HTSK/product, and correlated-stress evidence',
+        'GRS threshold/lambda/architecture/schedule/firing/stress diagnostics from direct reruns',
+        'output/reproducible_paper_tables/04_*.csv',
+    ),
+    (
+        '05_complementary_boundary_and_error_recovery.ipynb',
+        'Table 12; Tables 15-17',
+        'Boundary-bin correction and representative Breast Cancer recovery-case tables',
+        'Q1 boundary-bin correction and BCWD case recovery analysis',
+        'output/reproducible_paper_tables/05_boundary/*.csv',
+    ),
+    (
+        '06_interpretability_shap_lime_grs_rule_path.ipynb',
+        'Table A7; supports Table 17',
+        'Explanation-form comparison and GRS rule-path diagnostics',
+        'SHAP/LIME recomputation and GRS rule-path diagnostics',
+        'output/reproducible_paper_tables/06_interpretability/*.csv',
+    ),
+    (
+        '07_statistical_tests_and_submission_tables.ipynb',
+        'Table A9; generated-table inventory',
+        'Paired statistics and final reproducibility inventory',
+        'paired tests from generated fold-level results and final source inventory',
+        'output/reproducible_paper_tables/07_*.csv',
+    ),
+]
+
+@dataclass
+class DatasetBundle:
+    key: str
+    display: str
+    X: pd.DataFrame
+    y: np.ndarray
+    task: str
+    n_outputs: int
+
+
+def ensure_out(path: Path = OUT_ROOT) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def parse_dataset_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return list(DATASET_LOADERS)
+    out = []
+    for value in values:
+        if value in DATASET_LOADERS:
+            out.append(value)
+        elif value in DATASET_BY_DISPLAY:
+            out.append(DATASET_BY_DISPLAY[value])
+        else:
+            raise ValueError(f'Unknown dataset: {value}')
+    return out
+
+
+def display_dataset(name: str) -> str:
+    return DISPLAY_DATASET.get(name, name)
+
+
+def normalize_feature_key(name: object) -> str:
+    text = str(name).strip()
+    return '_'.join(part for part in ''.join(ch if ch.isalnum() else '_' for ch in text).split('_') if part).lower()
+
+
+def resolve_selected_feature_columns(X: pd.DataFrame, selected: list[str]) -> tuple[list[str], list[str]]:
+    """Resolve configured selected features to current model-input columns.
+
+    Raw categorical names such as ``Clump_thickness`` expand to one-hot columns
+    such as ``Clump_thickness=2`` ... ``Clump_thickness=10``.
+    """
+    exact = {str(col): str(col) for col in X.columns}
+    normalized_exact: dict[str, list[str]] = {}
+    normalized_base: dict[str, list[str]] = {}
+    for col in map(str, X.columns):
+        normalized_exact.setdefault(normalize_feature_key(col), []).append(col)
+        base = col.split('=', 1)[0]
+        normalized_base.setdefault(normalize_feature_key(base), []).append(col)
+
+    resolved: list[str] = []
+    unmatched: list[str] = []
+    for feat in selected:
+        feat_str = str(feat)
+        matches: list[str] = []
+        if feat_str in exact:
+            matches = [exact[feat_str]]
+        elif feat_str.startswith('x') and feat_str[1:].isdigit():
+            idx = int(feat_str[1:])
+            if idx < X.shape[1]:
+                matches = [str(X.columns[idx])]
+        else:
+            key = normalize_feature_key(feat_str)
+            if key in normalized_exact:
+                matches = normalized_exact[key]
+            elif key in normalized_base:
+                matches = normalized_base[key]
+        if matches:
+            resolved.extend(matches)
+        else:
+            unmatched.append(feat_str)
+    return list(dict.fromkeys(resolved)), unmatched
+
+
+def select_features_df(X: pd.DataFrame, selected: list[str], label: str) -> tuple[pd.DataFrame, list[str]]:
+    if not selected:
+        return X, list(X.columns)
+    resolved, unmatched = resolve_selected_feature_columns(X, selected)
+    if unmatched:
+        print(f'[{label}] unresolved configured selected features: {unmatched[:10]}')
+    if not resolved:
+        raise ValueError(f'[{label}] no configured selected features matched current input columns')
+    return X.loc[:, resolved], list(resolved)
+
+
+def load_dataset_bundle(dataset: str) -> DatasetBundle:
+    X, y, _features = DATASET_LOADERS[dataset]()
+    X = coerce_numeric_frame(X)
+    X, y = drop_nan_targets(X, y)
+    y = np.asarray(y)
+    n_classes = len(np.unique(y))
+    task = 'binary' if n_classes == 2 else 'multiclass'
+    n_outputs = 1 if task == 'binary' else n_classes
+    return DatasetBundle(dataset, display_dataset(dataset), X, y, task, n_outputs)
+
+
+def metric_average(task: str) -> str:
+    return 'weighted' if task == 'multiclass' else 'binary'
+
+
+def cls_metrics(y_true: np.ndarray, y_pred: np.ndarray, task: str) -> dict[str, float]:
+    avg = metric_average(task)
+    return {
+        'acc': float(accuracy_score(y_true, y_pred)),
+        'precision': float(precision_score(y_true, y_pred, average=avg, zero_division=0)),
+        'recall': float(recall_score(y_true, y_pred, average=avg, zero_division=0)),
+        'f1': float(f1_score(y_true, y_pred, average=avg, zero_division=0)),
+    }
+
+
+def eval_torch(model: torch.nn.Module, loader, task: str) -> dict[str, float]:
+    model.eval()
+    preds, targets = [], []
+    with torch.no_grad():
+        for xb, yb in loader:
+            logits = model(xb.to(DEVICE).float())
+            if task == 'binary':
+                if logits.dim() == 1:
+                    logits = logits.unsqueeze(1)
+                pred = (torch.sigmoid(logits) >= 0.5).long().squeeze(1)
+                target = yb.long().squeeze(1) if yb.dim() > 1 else yb.long()
+            else:
+                pred = torch.argmax(logits, dim=1)
+                target = yb.long()
+            preds.append(pred.cpu().numpy())
+            targets.append(target.cpu().numpy())
+    return cls_metrics(np.concatenate(targets), np.concatenate(preds), task)
+
+
+def eval_grs_modes(model, loader, task: str) -> dict[str, dict[str, float]]:
+    out = {}
+    for mode, label in [('primary_only', 'GRS-ANFIS(primary)'), ('complementary_only', 'GRS-ANFIS(complementary)'), ('full', 'GRS-ANFIS(full)')]:
+        model.set_mode(mode)
+        out[label] = eval_torch(model, loader, task)
+    model.set_mode('full')
+    return out
+
+
+def grs_feature_counts(model) -> tuple[float, float, float, float]:
+    primary = model.primary_mask_hard.detach().cpu().float().numpy()
+    if getattr(model, 'complementary_gate_mode', 'complement') == 'complement':
+        comp = (1.0 - primary) * model.complementary_mask_hard.detach().cpu().float().numpy()
+    else:
+        comp = model.complementary_mask_hard.detach().cpu().float().numpy()
+    overlap = float(np.logical_and(primary > 0.5, comp > 0.5).sum())
+    return float(primary.sum()), float(comp.sum()), float(primary.sum() + comp.sum()), overlap
+
+
+def mask_jaccard(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+    a = np.asarray(mask_a) > 0.5
+    b = np.asarray(mask_b) > 0.5
+    union = np.logical_or(a, b).sum()
+    if union == 0:
+        return 1.0
+    return float(np.logical_and(a, b).sum() / union)
+
+
+def firing_stats(model, loader) -> dict[str, float]:
+    base_near_zero, comp_near_zero, comp_max, comp_eff = [], [], [], []
+    model.set_mode('full')
+    model.eval()
+    with torch.no_grad():
+        for xb, _ in loader:
+            _, activations = model(xb.to(DEVICE).float(), return_activations=True)
+            pw = activations.get('primary_rule_weights')
+            cw = activations.get('complementary_rule_weights')
+            if pw is not None:
+                base_near_zero.append((pw <= 1e-8).float().mean().item())
+            if cw is not None:
+                comp_near_zero.append((cw <= 1e-8).float().mean().item())
+                comp_max.append(cw.max(dim=1).values.mean().item())
+                entropy = -(cw * torch.log(cw + 1e-12)).sum(dim=1)
+                comp_eff.append(torch.exp(entropy).mean().item())
+    return {
+        'base_near_zero': float(np.mean(base_near_zero)) if base_near_zero else math.nan,
+        'comp_near_zero': float(np.mean(comp_near_zero)) if comp_near_zero else math.nan,
+        'comp_max_weight': float(np.mean(comp_max)) if comp_max else math.nan,
+        'comp_effective_rules': float(np.mean(comp_eff)) if comp_eff else math.nan,
+    }
+
+
+def summarize(df: pd.DataFrame, group_cols: list[str], metric_cols: list[str] | None = None) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if metric_cols is None:
+        metric_cols = [c for c in df.columns if c not in set(group_cols) and pd.api.types.is_numeric_dtype(df[c])]
+    summary = df.groupby(group_cols, dropna=False)[metric_cols].agg(['mean', 'std']).reset_index()
+    summary.columns = ['_'.join(col).rstrip('_') if isinstance(col, tuple) else col for col in summary.columns.to_flat_index()]
+    return summary
+
+
+def train_val_loaders(
+    bundle: DatasetBundle,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    batch_size: int = 1024,
+    return_scaler: bool = False,
+):
+    X_train_full, X_val_full = bundle.X.iloc[train_idx], bundle.X.iloc[val_idx]
+    y_train, y_val = bundle.y[train_idx], bundle.y[val_idx]
+    scaler = StandardScaler().fit(X_train_full)
+    X_train_scaled = scaler.transform(X_train_full)
+    X_val_scaled = scaler.transform(X_val_full)
+    train_loader = build_loader(X_train_scaled, y_train, batch_size, DEVICE, bundle.task)
+    val_loader = build_loader(X_val_scaled, y_val, batch_size, DEVICE, bundle.task)
+    if return_scaler:
+        return X_train_full, X_val_full, y_train, y_val, train_loader, val_loader, scaler
+    return X_train_full, X_val_full, y_train, y_val, train_loader, val_loader
+
+
+def grs_params(dataset: str, **overrides) -> dict:
+    params = dict(load_grs_params(dataset, dataset))
+    params.update(overrides)
+    return normalize_grs_params(params)
+
+
+def artifact_root(out_root: Path, notebook_task: str) -> Path:
+    path = out_root / 'model_artifacts' / notebook_task
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def artifact_dataset_key(dataset: str, mode: str = 'no_mi') -> str:
+    key = ARTIFACT_DATASET_KEYS.get(dataset, display_dataset(dataset))
+    return f'{key}__{mode}' if mode else key
+
+
+def artifact_model_stem(model_name: str) -> str:
+    stem = ''.join(ch.lower() if ch.isalnum() else '_' for ch in str(model_name))
+    return '_'.join(part for part in stem.split('_') if part)
+
+
+def _cpu_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    return {key: value.detach().cpu() for key, value in model.state_dict().items()}
+
+
+def save_torch_artifact(
+    *,
+    model: torch.nn.Module,
+    out_path: Path,
+    dataset: str,
+    model_name: str,
+    fold: int,
+    task_kind: str,
+    n_outputs: int,
+    feature_names: list[str],
+    params: dict,
+    scaler: StandardScaler | None,
+    source: str,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'framework': 'torch',
+        'dataset': artifact_dataset_key(dataset),
+        'dataset_key': artifact_dataset_key(dataset),
+        'model_name': model_name,
+        'fold': int(fold),
+        'task_kind': task_kind,
+        'n_outputs': int(n_outputs),
+        'n_features': int(len(feature_names)),
+        'feature_names': list(map(str, feature_names)),
+        'params': params,
+        'scaler_mean': scaler.mean_.tolist() if scaler is not None else None,
+        'scaler_scale': scaler.scale_.tolist() if scaler is not None else None,
+        'state_dict': _cpu_state_dict(model),
+        'extra_meta': {'source': source},
+    }
+    torch.save(payload, out_path)
+
+
+def save_sklearn_artifact(
+    *,
+    model,
+    out_path: Path,
+    dataset: str,
+    model_name: str,
+    fold: int,
+    task_kind: str,
+    feature_names: list[str],
+    params: dict | None,
+    source: str,
+    extra_meta: dict | None = None,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'framework': 'sklearn',
+        'dataset': artifact_dataset_key(dataset),
+        'dataset_key': artifact_dataset_key(dataset),
+        'model_name': model_name,
+        'fold': int(fold),
+        'task_kind': task_kind,
+        'n_features': int(len(feature_names)),
+        'feature_names': list(map(str, feature_names)),
+        'params': params or {},
+        'model': model,
+        'extra_meta': {'source': source, **(extra_meta or {})},
+    }
+    joblib.dump(payload, out_path)
+
+
+def fit_joint_grs(params: dict, train_loader, n_features: int, n_outputs: int, task: str, feature_names: list[str]):
+    params = normalize_grs_params(params)
+    model = GRS_ANFIS(
+        n_features=n_features,
+        n_outputs=n_outputs,
+        complementary_rules=params['complementary_rules'],
+        primary_rules=params['primary_rules'],
+        mf_per_feature=params['mf_per_feature'],
+        device=DEVICE,
+        complementary_gate_mode=params['complementary_gate_mode'],
+        rule_init_mode=params['rule_init_mode'],
+        rule_seed=params['rule_seed'],
+        firing_mode=params['firing_mode'],
+        use_input_norm=params['use_input_norm'],
+        enable_complementary_branch=params['enable_complementary_branch'],
+    ).to(DEVICE)
+    criterion = torch.nn.CrossEntropyLoss() if task == 'multiclass' else torch.nn.BCEWithLogitsLoss()
+    model.set_phase('joint')
+    model.set_mode('full')
+    model.unfreeze_primary()
+    model.unfreeze_complementary()
+    model.unfreeze_primary_routing()
+    model.unfreeze_complementary_routing()
+    optimizer = make_optimizer(model, lr=min(params['lr_primary'], params['lr_complementary']), weight_decay=params['weight_decay'])
+    epochs = int(params['epochs_stage1']) + int(params['epochs_stage2'])
+    for _ in range(epochs):
+        train_one_epoch_dual_cls(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            DEVICE,
+            phase='joint',
+            lambda_primary=params['lambda_primary_s1'],
+            lambda_complementary=params['lambda_complementary_s2'],
+            feature_names=list(feature_names),
+            binary_columns=[],
+            task=task,
+        )
+    return model
+
+
+def write_table_map(out_root: Path = OUT_ROOT) -> None:
+    ensure_out(out_root)
+    df = pd.DataFrame(
+        PAPER_TABLE_MAP,
+        columns=['notebook', 'paper_table_number_v6', 'paper_table_title_or_scope', 'evidence_block', 'generated_output'],
+    )
+    df.to_csv(out_root / 'paper_table_map.csv', index=False)
+    md = ['# Reproducibility Notebook to Paper Table Map', '']
+    md.append('Table numbers follow the supplied `v6.pdf` manuscript.')
+    md.append('')
+    md.append('| Notebook | Paper table number(s) | Paper table title/scope | Evidence block | Generated output |')
+    md.append('|---|---|---|---|---|')
+    for row in df.itertuples(index=False):
+        md.append(
+            f'| `{row.notebook}` | {row.paper_table_number_v6} | {row.paper_table_title_or_scope} | '
+            f'{row.evidence_block} | `{row.generated_output}` |'
+        )
+    md.append('')
+    md.append('Coverage note: Tables 2-6 are generated from `hyper_parameter/*.json` by notebook 00. Table 11 is the runtime table and still requires a dedicated runtime notebook if it should be regenerated from timed runs.')
+    md.append('')
+    md.append('Policy: manuscript numeric tables must be produced from these generated outputs or from fold-level files generated in the same run.  Hard-coded numeric manuscript rows and silent legacy-summary imports are not allowed.')
+    (out_root / 'paper_table_map.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
+
+
+def _json_cell(value: object) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True)
+
+
+def write_hyperparameter_tables(out_root: Path = OUT_ROOT) -> None:
+    ensure_out(out_root)
+    settings = load_common_experiment_settings()
+
+    pd.DataFrame(settings.get('parameter_ranges', [])).to_csv(out_root / '00_hyperparameter_ranges.csv', index=False)
+
+    anfis_params = load_anfis_params('default', 'default')
+    common_rows = [
+        {
+            'item': 'ANFIS baseline',
+            'setting': _json_cell({k: anfis_params.get(k) for k in ['lr', 'n_rules', 'epochs', 'mfs_per_input', 'selected_features']}),
+            'source_file': 'hyper_parameter/paper_ANFIS_HP.json',
+        },
+        {
+            'item': 'SVM (RBF)',
+            'setting': _json_cell(load_svm_params()),
+            'source_file': 'hyper_parameter/common_experiment_settings.json',
+        },
+        {
+            'item': 'Genetic Algorithm (GA)',
+            'setting': _json_cell(settings.get('ga_search', {})),
+            'source_file': 'hyper_parameter/common_experiment_settings.json + hyper_parameter/best_GA-ANFIS_HP.json',
+        },
+        {
+            'item': 'Particle Swarm Optimization (PSO)',
+            'setting': _json_cell(settings.get('pso_search', {})),
+            'source_file': 'hyper_parameter/common_experiment_settings.json + hyper_parameter/best_PSO-ANFIS_HP.json',
+        },
+        {
+            'item': 'H-ANFIS split rule',
+            'setting': _json_cell(settings.get('h_anfis_split', {})),
+            'source_file': 'hyper_parameter/common_experiment_settings.json + hyper_parameter/best_H-ANFIS_HP.json',
+        },
+    ]
+    pd.DataFrame(common_rows).to_csv(out_root / '00_common_experiment_settings.csv', index=False)
+
+    ga_pso_rows = []
+    h_rows = []
+    grs_rows = []
+    feature_resolution_rows = []
+    for dataset in DATASET_LOADERS:
+        display = display_dataset(dataset)
+        ga = load_ga_params(dataset, dataset)
+        pso = load_pso_params(dataset, dataset)
+        h = load_h_params(dataset, dataset)
+        grs = grs_params(dataset)
+        for model_name, params, source_file in [
+            ('GA-ANFIS', ga, 'hyper_parameter/best_GA-ANFIS_HP.json'),
+            ('PSO-ANFIS', pso, 'hyper_parameter/best_PSO-ANFIS_HP.json'),
+        ]:
+            selected = list(params.get('selected_features') or [])
+            feature_selection = params.get('feature_selection') or {}
+            ga_pso_rows.append({
+                'dataset': display,
+                'model': model_name,
+                'lr': params.get('lr'),
+                'n_rules': params.get('n_rules'),
+                'epochs': params.get('epochs'),
+                'configured_selected_features': len(selected),
+                'reported_selected_count': feature_selection.get('selected_count', len(selected)),
+                'source_file': source_file,
+            })
+        h_rows.append({
+            'dataset': display,
+            'lr': h.get('lr'),
+            'epochs': h.get('epochs'),
+            'module_rules': h.get('branch_rules'),
+            'top_rules': h.get('top_rules'),
+            'mfs_per_input': h.get('mfs_per_input'),
+            'weight_decay': h.get('weight_decay'),
+            'source_file': 'hyper_parameter/best_H-ANFIS_HP.json',
+        })
+        grs_rows.append({
+            'dataset': display,
+            'lr_primary': grs.get('lr_primary'),
+            'lr_complementary': grs.get('lr_complementary'),
+            'primary_rules': grs.get('primary_rules'),
+            'complementary_rules': grs.get('complementary_rules'),
+            'mf_per_feature': grs.get('mf_per_feature'),
+            'epochs_stage1': grs.get('epochs_stage1'),
+            'epochs_stage2': grs.get('epochs_stage2'),
+            'lambda_primary_s1': grs.get('lambda_primary_s1'),
+            'lambda_complementary_s2': grs.get('lambda_complementary_s2'),
+            'weight_decay': grs.get('weight_decay'),
+            'primary_hard_epochs': grs.get('primary_hard_epochs'),
+            'complementary_hard_epochs': grs.get('complementary_hard_epochs'),
+            'source_file': 'hyper_parameter/best_GRS-ANFIS_HP.json',
+        })
+        bundle = load_dataset_bundle(dataset)
+        for model_name, params, source_file in [
+            ('GA-ANFIS', ga, 'hyper_parameter/best_GA-ANFIS_HP.json'),
+            ('PSO-ANFIS', pso, 'hyper_parameter/best_PSO-ANFIS_HP.json'),
+        ]:
+            selected = list(params.get('selected_features') or [])
+            resolved, unmatched = resolve_selected_feature_columns(bundle.X, selected)
+            feature_resolution_rows.append({
+                'dataset': display,
+                'model': model_name,
+                'configured_selected_features': len(selected),
+                'resolved_model_input_columns': len(resolved),
+                'unresolved_configured_features': len(unmatched),
+                'unresolved_features_json': _json_cell(unmatched),
+                'source_file': source_file,
+            })
+
+    pd.DataFrame(ga_pso_rows).to_csv(out_root / '00_ga_pso_hyperparameters.csv', index=False)
+    pd.DataFrame(h_rows).to_csv(out_root / '00_h_anfis_hyperparameters.csv', index=False)
+    pd.DataFrame(grs_rows).to_csv(out_root / '00_grs_anfis_hyperparameters.csv', index=False)
+    pd.DataFrame(feature_resolution_rows).to_csv(out_root / '00_ga_pso_selected_feature_resolution.csv', index=False)
+
+
+def run_data_audit(args) -> None:
+    out_root = ensure_out(args.output_root)
+    rows = []
+    for dataset in parse_dataset_list(args.datasets):
+        bundle = load_dataset_bundle(dataset)
+        rows.append({
+            'dataset': dataset,
+            'display_dataset': bundle.display,
+            'n_samples': len(bundle.y),
+            'model_input_dim': bundle.X.shape[1],
+            'n_classes': len(np.unique(bundle.y)),
+            'task_kind': bundle.task,
+            'source': 'direct loader execution',
+        })
+    pd.DataFrame(rows).to_csv(out_root / '00_data_audit.csv', index=False)
+    write_hyperparameter_tables(out_root)
+    write_table_map(out_root)
+
+
+def run_main(args) -> None:
+    out_root = ensure_out(args.output_root)
+    model_root = artifact_root(out_root, '01_main_neuro_fuzzy_and_svm_experiments') / 'cv_weights'
+    fold_rows = []
+    for dataset in parse_dataset_list(args.datasets):
+        bundle = load_dataset_bundle(dataset)
+        splitter = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+        base_grs_params = grs_params(dataset)
+        ga_params = load_ga_params(dataset, dataset)
+        pso_params = load_pso_params(dataset, dataset)
+        tsk_params = load_anfis_params(dataset, dataset)
+        h_params = load_h_params(dataset, dataset)
+        svm_params = load_svm_params()
+        print(f'[main] {dataset} shape={bundle.X.shape}')
+        for fold, (train_idx, val_idx) in enumerate(splitter.split(bundle.X, bundle.y), 1):
+            set_deterministic(SEED)
+            X_train_full, X_val_full, y_train, y_val, train_loader, val_loader, scaler_full = train_val_loaders(bundle, train_idx, val_idx, return_scaler=True)
+            fold_artifact_dir = model_root / artifact_dataset_key(dataset) / f'fold_{fold:02d}'
+
+            grs_model, _ = fit_grs_anfis(base_grs_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+            save_torch_artifact(
+                model=grs_model,
+                out_path=fold_artifact_dir / 'grs_anfis.pt',
+                dataset=dataset,
+                model_name='GRS-ANFIS',
+                fold=fold,
+                task_kind=bundle.task,
+                n_outputs=bundle.n_outputs,
+                feature_names=list(X_train_full.columns),
+                params=base_grs_params,
+                scaler=scaler_full,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            grs_metrics = eval_grs_modes(grs_model, val_loader, bundle.task)
+            p_count, c_count, full_count, overlap = grs_feature_counts(grs_model)
+            for model_name, metrics in grs_metrics.items():
+                count = full_count
+                if model_name.endswith('(primary)'):
+                    count = p_count
+                elif model_name.endswith('(complementary)'):
+                    count = c_count
+                fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': model_name, **metrics, 'n_features': count, 'pc_overlap': overlap, 'source': 'direct rerun; hyperparameters from hyper_parameter/best_GRS-ANFIS_HP.json'})
+
+            X_train_tsk, tsk_used = select_features_df(X_train_full, list(tsk_params.get('selected_features') or []), 'ANFIS')
+            X_val_tsk = X_val_full.loc[:, tsk_used]
+            scaler_tsk = StandardScaler().fit(X_train_tsk)
+            tsk_loader = build_loader(scaler_tsk.transform(X_train_tsk), y_train, 64, DEVICE, bundle.task)
+            tsk_val_loader = build_loader(scaler_tsk.transform(X_val_tsk), y_val, 256, DEVICE, bundle.task)
+            tsk_model, _ = fit_tsk_anfis(tsk_params, tsk_loader, X_train_tsk.shape[1], bundle.n_outputs, bundle.task, DEVICE)
+            save_torch_artifact(
+                model=tsk_model,
+                out_path=fold_artifact_dir / 'anfis.pt',
+                dataset=dataset,
+                model_name='ANFIS',
+                fold=fold,
+                task_kind=bundle.task,
+                n_outputs=bundle.n_outputs,
+                feature_names=tsk_used,
+                params=tsk_params,
+                scaler=scaler_tsk,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': 'ANFIS', **eval_torch(tsk_model, tsk_val_loader, bundle.task), 'n_features': X_train_tsk.shape[1], 'configured_selected_features': len(tsk_params.get('selected_features') or []), 'source': 'direct rerun; hyperparameters from hyper_parameter/paper_ANFIS_HP.json'})
+
+            X_train_ga, ga_used = select_features_df(X_train_full, list(ga_params.get('selected_features') or []), 'GA-ANFIS')
+            X_val_ga = X_val_full.loc[:, ga_used]
+            scaler_ga = StandardScaler().fit(X_train_ga)
+            ga_loader = build_loader(scaler_ga.transform(X_train_ga), y_train, 1024, DEVICE, bundle.task)
+            ga_val_loader = build_loader(scaler_ga.transform(X_val_ga), y_val, 1024, DEVICE, bundle.task)
+            ga_model, _ = fit_tsk_anfis(ga_params, ga_loader, X_train_ga.shape[1], bundle.n_outputs, bundle.task, DEVICE)
+            save_torch_artifact(
+                model=ga_model,
+                out_path=fold_artifact_dir / 'ga_anfis.pt',
+                dataset=dataset,
+                model_name='GA-ANFIS',
+                fold=fold,
+                task_kind=bundle.task,
+                n_outputs=bundle.n_outputs,
+                feature_names=ga_used,
+                params=ga_params,
+                scaler=scaler_ga,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': 'GA-ANFIS', **eval_torch(ga_model, ga_val_loader, bundle.task), 'n_features': X_train_ga.shape[1], 'configured_selected_features': len(ga_params.get('selected_features') or []), 'source': 'direct rerun; hyperparameters and selected_features from hyper_parameter/best_GA-ANFIS_HP.json'})
+
+            X_train_pso, pso_used = select_features_df(X_train_full, list(pso_params.get('selected_features') or []), 'PSO-ANFIS')
+            X_val_pso = X_val_full.loc[:, pso_used]
+            scaler_pso = StandardScaler().fit(X_train_pso)
+            pso_loader = build_loader(scaler_pso.transform(X_train_pso), y_train, 1024, DEVICE, bundle.task)
+            pso_val_loader = build_loader(scaler_pso.transform(X_val_pso), y_val, 1024, DEVICE, bundle.task)
+            pso_model, _ = fit_tsk_anfis(pso_params, pso_loader, X_train_pso.shape[1], bundle.n_outputs, bundle.task, DEVICE)
+            save_torch_artifact(
+                model=pso_model,
+                out_path=fold_artifact_dir / 'pso_anfis.pt',
+                dataset=dataset,
+                model_name='PSO-ANFIS',
+                fold=fold,
+                task_kind=bundle.task,
+                n_outputs=bundle.n_outputs,
+                feature_names=pso_used,
+                params=pso_params,
+                scaler=scaler_pso,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': 'PSO-ANFIS', **eval_torch(pso_model, pso_val_loader, bundle.task), 'n_features': X_train_pso.shape[1], 'configured_selected_features': len(pso_params.get('selected_features') or []), 'source': 'direct rerun; hyperparameters and selected_features from hyper_parameter/best_PSO-ANFIS_HP.json'})
+
+            h_model, _, _ = fit_parallel_hier_anfis(h_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, DEVICE, fusion=h_params.get('fusion', 'avg'), split_seed=SEED + int(h_params.get('seed_offset', 101)) + fold * 997, feature_names=list(X_train_full.columns))
+            save_torch_artifact(
+                model=h_model,
+                out_path=fold_artifact_dir / 'h_anfis.pt',
+                dataset=dataset,
+                model_name='H-ANFIS',
+                fold=fold,
+                task_kind=bundle.task,
+                n_outputs=bundle.n_outputs,
+                feature_names=list(X_train_full.columns),
+                params=h_params,
+                scaler=scaler_full,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': 'H-ANFIS', **eval_torch(h_model, val_loader, bundle.task), 'n_features': X_train_full.shape[1], 'source': 'direct rerun; hyperparameters from hyper_parameter/best_H-ANFIS_HP.json'})
+
+            svm = SVC(**svm_params)
+            svm.fit(X_train_full, y_train)
+            save_sklearn_artifact(
+                model=svm,
+                out_path=fold_artifact_dir / 'svm.joblib',
+                dataset=dataset,
+                model_name='SVM',
+                fold=fold,
+                task_kind=bundle.task,
+                feature_names=list(X_train_full.columns),
+                params=svm_params,
+                source='01_main_neuro_fuzzy_and_svm_experiments.ipynb direct rerun',
+            )
+            fold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': 'SVM', **cls_metrics(y_val, svm.predict(X_val_full), bundle.task), 'n_features': X_train_full.shape[1], 'source': 'direct rerun; hyperparameters from hyper_parameter/common_experiment_settings.json'})
+
+    fold_df = pd.DataFrame(fold_rows)
+    fold_df.to_csv(out_root / '01_main_neuro_fuzzy_folds.csv', index=False)
+    summarize(fold_df, ['dataset', 'display_dataset', 'model']).to_csv(out_root / '01_main_neuro_fuzzy_summary.csv', index=False)
+
+
+def make_candidate_model(model_name: str, params: dict, task: str, seed: int):
+    if model_name == 'RandomForest':
+        return RandomForestClassifier(random_state=seed, n_jobs=1, **params)
+    if model_name == 'HGB':
+        return HistGradientBoostingClassifier(random_state=seed, **params)
+    if model_name == 'XGBoost':
+        from xgboost import XGBClassifier
+        return XGBClassifier(random_state=seed, n_jobs=1, eval_metric='logloss' if task == 'binary' else 'mlogloss', **params)
+    if model_name == 'LightGBM':
+        from lightgbm import LGBMClassifier
+        return LGBMClassifier(random_state=seed, n_jobs=1, verbose=-1, **params)
+    if model_name == 'CatBoost':
+        from catboost import CatBoostClassifier
+        return CatBoostClassifier(random_seed=seed, thread_count=1, verbose=False, allow_writing_files=False, **params)
+    if model_name == 'EBM':
+        from interpret.glassbox import ExplainableBoostingClassifier
+        return ExplainableBoostingClassifier(random_state=seed, n_jobs=1, **params)
+    raise ValueError(model_name)
+
+
+def model_grid() -> dict[str, list[dict]]:
+    return load_tabular_baseline_candidates()
+
+
+def safe_feature_name_frame(X: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with booster-safe, unique feature names."""
+    used: dict[str, int] = {}
+    safe_columns = []
+    for idx, column in enumerate(X.columns):
+        safe = ''.join(ch if ch.isalnum() else '_' for ch in str(column)).strip('_')
+        safe = '_'.join(part for part in safe.split('_') if part)
+        if not safe:
+            safe = f'feature_{idx}'
+        if safe[0].isdigit():
+            safe = f'f_{safe}'
+
+        base = safe
+        seen = used.get(base, 0)
+        used[base] = seen + 1
+        if seen:
+            safe = f'{base}_{seen}'
+        safe_columns.append(safe)
+
+    X_safe = X.copy()
+    X_safe.columns = safe_columns
+    return X_safe
+
+
+def run_tabular_baselines(args) -> None:
+    out_root = ensure_out(args.output_root)
+    model_root = artifact_root(out_root, '02_tree_boosting_and_ebm_baselines')
+    rows, skipped = [], []
+    grids = model_grid()
+    for dataset in parse_dataset_list(args.datasets):
+        bundle = load_dataset_bundle(dataset)
+        X_model = safe_feature_name_frame(bundle.X)
+        splitter = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+        for fold, (train_idx, val_idx) in enumerate(splitter.split(bundle.X, bundle.y), 1):
+            train_pool, val_pool = train_test_split(train_idx, test_size=0.2, random_state=SEED, stratify=bundle.y[train_idx])
+            fold_artifact_dir = model_root / artifact_dataset_key(dataset) / f'fold_{fold:02d}'
+            for model_name, candidates in grids.items():
+                try:
+                    best_params, best_inner = None, -np.inf
+                    for params in candidates:
+                        model = make_candidate_model(model_name, params, bundle.task, SEED)
+                        model.fit(X_model.iloc[train_pool], bundle.y[train_pool])
+                        pred = model.predict(X_model.iloc[val_pool])
+                        inner_f1 = cls_metrics(bundle.y[val_pool], pred, bundle.task)['f1']
+                        if inner_f1 > best_inner:
+                            best_inner = inner_f1
+                            best_params = dict(params)
+                    model = make_candidate_model(model_name, best_params or {}, bundle.task, SEED)
+                    model.fit(X_model.iloc[train_idx], bundle.y[train_idx])
+                    pred = model.predict(X_model.iloc[val_idx])
+                    save_sklearn_artifact(
+                        model=model,
+                        out_path=fold_artifact_dir / f'{artifact_model_stem(model_name)}.joblib',
+                        dataset=dataset,
+                        model_name=model_name,
+                        fold=fold,
+                        task_kind=bundle.task,
+                        feature_names=list(X_model.columns),
+                        params=best_params or {},
+                        source='02_tree_boosting_and_ebm_baselines.ipynb direct rerun',
+                        extra_meta={
+                            'inner_f1': best_inner,
+                            'feature_name_preprocessing': 'safe ASCII unique feature names',
+                        },
+                    )
+                    rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'model': model_name, 'input_dim': X_model.shape[1], 'inner_f1': best_inner, 'best_params_json': json.dumps(best_params, sort_keys=True), **cls_metrics(bundle.y[val_idx], pred, bundle.task), 'source': 'direct rerun; sanitized feature names'})
+                except Exception as exc:
+                    skipped.append({'dataset': dataset, 'fold': fold, 'model': model_name, 'reason': repr(exc)})
+    fold_df = pd.DataFrame(rows)
+    fold_df.to_csv(out_root / '02_tabular_baseline_folds.csv', index=False)
+    summarize(fold_df, ['dataset', 'display_dataset', 'model']).to_csv(out_root / '02_tabular_baseline_summary.csv', index=False)
+    pd.DataFrame(skipped).to_csv(out_root / '02_tabular_baseline_skipped.csv', index=False)
+
+
+def run_grs_diagnostics(args) -> None:
+    out_root = ensure_out(args.output_root)
+    threshold_rows, lambda_rows, full_primary_rows = [], [], []
+    schedule_rows, arch_rows, firing_rows, stress_rows = [], [], [], []
+    tau_values = [float(x) for x in args.tau_values]
+    lambda_values = [float(x) for x in args.lambda_values]
+    for dataset in parse_dataset_list(args.datasets):
+        bundle = load_dataset_bundle(dataset)
+        splitter = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+        for fold, (train_idx, val_idx) in enumerate(splitter.split(bundle.X, bundle.y), 1):
+            set_deterministic(SEED)
+            X_train_full, X_val_full, y_train, y_val, train_loader, val_loader = train_val_loaders(bundle, train_idx, val_idx)
+            base_params = grs_params(dataset)
+            model, _ = fit_grs_anfis(base_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+            mode_metrics = eval_grs_modes(model, val_loader, bundle.task)
+            p_count, c_count, full_count, overlap = grs_feature_counts(model)
+            primary_mask = model.primary_mask_hard.detach().cpu().numpy().copy()
+            comp_mask = model.complementary_mask_hard.detach().cpu().numpy().copy()
+            full_primary_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'primary_f1': mode_metrics['GRS-ANFIS(primary)']['f1'], 'full_f1': mode_metrics['GRS-ANFIS(full)']['f1'], 'delta_f1': mode_metrics['GRS-ANFIS(full)']['f1'] - mode_metrics['GRS-ANFIS(primary)']['f1'], 'selected_primary': p_count, 'selected_complementary': c_count, 'selected_full': full_count, 'pc_overlap': overlap, 'source': 'direct rerun'})
+            firing_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'mode': 'HTSK', **mode_metrics['GRS-ANFIS(full)'], **firing_stats(model, val_loader), 'source': 'direct rerun'})
+            for tau in tau_values:
+                model.primary_mask_threshold = tau
+                model.complementary_mask_threshold = tau
+                model.freeze_primary_mask(threshold=tau)
+                model.freeze_complementary_mask(threshold=tau)
+                p_tau, c_tau, full_tau, overlap_tau = grs_feature_counts(model)
+                metrics = eval_grs_modes(model, val_loader, bundle.task)['GRS-ANFIS(full)']
+                threshold_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'tau': tau, **metrics, 'selected_primary': p_tau, 'selected_complementary': c_tau, 'selected_full': full_tau, 'pc_overlap': overlap_tau, 'primary_mask_jaccard_vs_0.5': mask_jaccard(primary_mask, model.primary_mask_hard.detach().cpu().numpy()), 'source': 'direct rerun'})
+            for lam in lambda_values:
+                lam_params = grs_params(dataset, lambda_primary_s1=lam, lambda_complementary_s2=lam)
+                lam_model, _ = fit_grs_anfis(lam_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+                lam_metrics = eval_grs_modes(lam_model, val_loader, bundle.task)['GRS-ANFIS(full)']
+                p_lam, c_lam, full_lam, overlap_lam = grs_feature_counts(lam_model)
+                lambda_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'lambda_primary_s1': lam, 'lambda_complementary_s2': lam, **lam_metrics, 'selected_primary': p_lam, 'selected_complementary': c_lam, 'selected_full': full_lam, 'pc_overlap': overlap_lam, 'primary_mask_jaccard_vs_main': mask_jaccard(primary_mask, lam_model.primary_mask_hard.detach().cpu().numpy()), 'source': 'direct rerun'})
+            prod_params = grs_params(dataset, firing_mode='prod')
+            prod_model, _ = fit_grs_anfis(prod_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+            firing_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'mode': 'product', **eval_grs_modes(prod_model, val_loader, bundle.task)['GRS-ANFIS(full)'], **firing_stats(prod_model, val_loader), 'source': 'direct rerun'})
+            no_hard_params = grs_params(dataset, primary_hard_epochs=0, complementary_hard_epochs=0)
+            no_hard_model, _ = fit_grs_anfis(no_hard_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+            independent_params = grs_params(dataset, complementary_gate_mode='independent')
+            independent_model, _ = fit_grs_anfis(independent_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns), DEVICE)
+            joint_model = fit_joint_grs(base_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, list(X_train_full.columns))
+            tsk_params = {'lr': 0.1, 'n_rules': int(base_params['primary_rules']) + int(base_params['complementary_rules']), 'epochs': int(base_params['epochs_stage1']) + int(base_params['epochs_stage2']), 'mfs_per_input': int(base_params['mf_per_feature'])}
+            dense_model, _ = fit_tsk_anfis(tsk_params, train_loader, X_train_full.shape[1], bundle.n_outputs, bundle.task, DEVICE)
+            variants = {
+                'full_grs': (model, 'GRS-ANFIS full'),
+                'joint_no_freeze': (joint_model, 'joint training without sequential freezing'),
+                'no_hard_finetune': (no_hard_model, 'no hard-mask refinement'),
+                'no_disjoint': (independent_model, 'no disjoint complementary routing'),
+                'product_firing': (prod_model, 'product firing'),
+            }
+            for variant, (variant_model, label) in variants.items():
+                metrics = eval_grs_modes(variant_model, val_loader, bundle.task)['GRS-ANFIS(full)']
+                p_var, c_var, full_var, overlap_var = grs_feature_counts(variant_model)
+                arch_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'variant': variant, 'variant_label': label, **metrics, 'selected_full': full_var, 'pc_overlap': overlap_var, 'source': 'direct rerun'})
+                if variant in {'full_grs', 'joint_no_freeze', 'no_hard_finetune'}:
+                    schedule_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'schedule_variant': variant, **metrics, 'pc_overlap': overlap_var, 'source': 'direct rerun'})
+            arch_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'variant': 'dense_tsk_same_rules', 'variant_label': 'Dense TSK-ANFIS with same total rules', **eval_torch(dense_model, val_loader, bundle.task), 'selected_full': X_train_full.shape[1], 'pc_overlap': np.nan, 'source': 'direct rerun'})
+            if args.run_stress:
+                X_aug = X_train_full.copy()
+                X_val_aug = X_val_full.copy()
+                for idx, col in enumerate(list(X_train_full.columns)[: min(5, X_train_full.shape[1])]):
+                    X_aug[f'{col}_copy'] = X_train_full[col].to_numpy()
+                    X_val_aug[f'{col}_copy'] = X_val_full[col].to_numpy()
+                scaler_aug = StandardScaler().fit(X_aug)
+                aug_train_loader = build_loader(scaler_aug.transform(X_aug), y_train, 1024, DEVICE, bundle.task)
+                aug_val_loader = build_loader(scaler_aug.transform(X_val_aug), y_val, 1024, DEVICE, bundle.task)
+                aug_model, _ = fit_grs_anfis(base_params, aug_train_loader, X_aug.shape[1], bundle.n_outputs, bundle.task, list(X_aug.columns), DEVICE)
+                aug_metrics = eval_grs_modes(aug_model, aug_val_loader, bundle.task)['GRS-ANFIS(full)']
+                stress_rows.append({'dataset': dataset, 'display_dataset': bundle.display, 'fold': fold, 'copied_features': min(5, X_train_full.shape[1]), 'base_f1': mode_metrics['GRS-ANFIS(full)']['f1'], 'augmented_f1': aug_metrics['f1'], 'delta_f1': aug_metrics['f1'] - mode_metrics['GRS-ANFIS(full)']['f1'], 'base_selected': full_count, 'augmented_selected': grs_feature_counts(aug_model)[2], 'source': 'direct rerun'})
+    outputs = {
+        '04_threshold_sensitivity_folds.csv': pd.DataFrame(threshold_rows),
+        '04_sparsity_lambda_seed_folds.csv': pd.DataFrame(lambda_rows),
+        '04_full_vs_primary_folds.csv': pd.DataFrame(full_primary_rows),
+        '04_schedule_folds.csv': pd.DataFrame(schedule_rows),
+        '04_architecture_ablation_folds.csv': pd.DataFrame(arch_rows),
+        '04_product_vs_htsk_firing_folds.csv': pd.DataFrame(firing_rows),
+        '04_correlated_feature_stress_folds.csv': pd.DataFrame(stress_rows),
+    }
+    for name, df in outputs.items():
+        df.to_csv(out_root / name, index=False)
+        if not df.empty:
+            group = ['dataset', 'display_dataset']
+            if 'tau' in df.columns:
+                group.append('tau')
+            if 'lambda_primary_s1' in df.columns:
+                group.extend(['lambda_primary_s1', 'lambda_complementary_s2'])
+            if 'variant' in df.columns:
+                group.extend(['variant', 'variant_label'])
+            if 'schedule_variant' in df.columns:
+                group.append('schedule_variant')
+            if 'mode' in df.columns:
+                group.append('mode')
+            summarize(df, group).to_csv(out_root / name.replace('_folds.csv', '_summary.csv'), index=False)
+
+
+def run_boundary(args) -> None:
+    out_dir = ensure_out(args.output_root / '05_boundary')
+    from ablation2_complementary_boundary import run_ablation
+    weight_root = artifact_root(args.output_root, '01_main_neuro_fuzzy_and_svm_experiments') / 'cv_weights'
+    print(f'[boundary] loading GRS payloads from {weight_root}')
+    result = run_ablation(mode='no_mi', weight_root=str(weight_root), data_root='data', n_folds=args.folds, seed=SEED, n_bins=4, boundary_bin=1, out_dir=str(out_dir), summary_check_path=None, project_root=ROOT, dataset_names=parse_dataset_list(args.datasets), verbose=True)
+    for key, value in result.items():
+        if isinstance(value, pd.DataFrame):
+            value.to_csv(out_dir / f'{key}.csv', index=False)
+
+
+def _patch_shap_import_compatibility() -> None:
+    """Patch optional SHAP import issues in the local dependency stack."""
+    try:
+        import typing
+        import coverage
+
+        if hasattr(coverage, 'types'):
+            fallback = getattr(coverage.types, 'TTracer', typing.Any)
+            for name in ['Tracer', 'TShouldTraceFn', 'TShouldStartContextFn']:
+                if not hasattr(coverage.types, name):
+                    setattr(coverage.types, name, fallback)
+    except Exception:
+        pass
+
+
+def _import_shap_quietly():
+    _patch_shap_import_compatibility()
+    with contextlib.redirect_stderr(io.StringIO()):
+        import shap
+    return shap
+
+
+def _friendly_bcwd_feature(feature: object) -> str:
+    return BCWD_FRIENDLY_FEATURES.get(str(feature), str(feature).replace('_', ' '))
+
+
+def write_figure_a1_top(attribution_df: pd.DataFrame, out_dir: Path, top_n: int = 5) -> None:
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    methods = [
+        ('SHAP', 'SHAP global attribution', '#df6f52'),
+        ('Aggregated LIME', 'Aggregated LIME attribution', '#4f9b49'),
+    ]
+    top_frames = []
+    for method, _title, _color in methods:
+        subset = attribution_df[attribution_df['method'].eq(method)].copy()
+        subset = subset.sort_values('normalized_importance', ascending=False).head(top_n)
+        top_frames.append(subset)
+
+    max_score = max(
+        [float(frame['normalized_importance'].max()) for frame in top_frames if not frame.empty]
+        or [0.3]
+    )
+    x_limit = max(0.35, math.ceil((max_score + 0.02) * 10.0) / 10.0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.55), dpi=150)
+    fig.suptitle('Breast Cancer explanation-form comparison', fontsize=14, y=0.98)
+
+    for ax, (method, title, color), frame in zip(axes, methods, top_frames):
+        ax.set_title(title, fontsize=11.5, pad=8)
+        if frame.empty:
+            ax.text(0.5, 0.5, f'{method} unavailable', ha='center', va='center', transform=ax.transAxes)
+            ax.set_xlim(0.0, x_limit)
+            ax.set_yticks([])
+        else:
+            labels = [_friendly_bcwd_feature(feature) for feature in frame['feature']]
+            values = frame['normalized_importance'].to_numpy(dtype=float)
+            y_pos = np.arange(len(frame))
+            ax.barh(y_pos, values, color=color, edgecolor=color, alpha=0.95)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(labels, fontsize=9)
+            ax.invert_yaxis()
+            ax.set_xlim(0.0, x_limit)
+        ax.set_xlabel('Normalized mean |score|', fontsize=9)
+        ax.set_xticks(np.arange(0.0, x_limit + 1e-9, 0.1))
+        ax.tick_params(axis='x', labelsize=8.5)
+        ax.grid(axis='x', color='#d9d9d9', linewidth=0.8)
+        ax.grid(axis='y', visible=False)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.9)
+            spine.set_color('black')
+
+    fig.subplots_adjust(left=0.14, right=0.98, bottom=0.18, top=0.78, wspace=0.58)
+    fig.savefig(out_dir / 'figure_a1_top_shap_lime.png', dpi=300, bbox_inches='tight')
+    fig.savefig(out_dir / 'figure_a1_top_shap_lime.pdf', bbox_inches='tight')
+    plt.close(fig)
+
+
+def run_interpretability(args) -> None:
+    out_dir = ensure_out(args.output_root / '06_interpretability')
+    for stale_skip in ['shap_skipped.txt', 'lime_skipped.txt']:
+        path = out_dir / stale_skip
+        if path.exists():
+            path.unlink()
+    df = pd.read_csv(ROOT / 'data' / 'bcwd_uci_15.csv')
+    feature_names = [c for c in df.columns if c != 'target']
+    X = df[feature_names].to_numpy(dtype=float)
+    y = (df['target'].to_numpy() == 4).astype(int)
+    X = SimpleImputer(strategy='median').fit_transform(X)
+    X_train, X_eval, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=SEED, stratify=y)
+    rf = RandomForestClassifier(n_estimators=300, random_state=SEED, class_weight='balanced')
+    rf.fit(X_train, y_train)
+    rows = []
+    try:
+        shap = _import_shap_quietly()
+        explainer = shap.TreeExplainer(rf)
+        values = explainer.shap_values(X_eval, check_additivity=False)
+        if isinstance(values, list):
+            class_values = values[1]
+        elif getattr(values, 'ndim', 0) == 3:
+            class_values = values[:, :, 1]
+        else:
+            class_values = values
+        scores = np.mean(np.abs(class_values), axis=0)
+        scores = scores / scores.sum() if scores.sum() else scores
+        rows.extend({'method': 'SHAP', 'feature': f, 'normalized_importance': float(v)} for f, v in zip(feature_names, scores))
+    except Exception as exc:
+        (out_dir / 'shap_skipped.txt').write_text(repr(exc), encoding='utf-8')
+    try:
+        from lime.lime_tabular import LimeTabularExplainer
+        explainer = LimeTabularExplainer(X_train, feature_names=feature_names, class_names=['benign', 'malignant'], discretize_continuous=True, mode='classification', random_state=SEED)
+        weights = {feature: 0.0 for feature in feature_names}
+        for row in X_eval[:80]:
+            explanation = explainer.explain_instance(row, rf.predict_proba, labels=(1,), num_features=len(feature_names))
+            for condition, weight in explanation.as_list(label=1):
+                for feature in feature_names:
+                    if feature in condition:
+                        weights[feature] += abs(float(weight))
+                        break
+        vals = np.array([weights[f] for f in feature_names], dtype=float)
+        vals = vals / vals.sum() if vals.sum() else vals
+        rows.extend({'method': 'Aggregated LIME', 'feature': f, 'normalized_importance': float(v)} for f, v in zip(feature_names, vals))
+    except Exception as exc:
+        (out_dir / 'lime_skipped.txt').write_text(repr(exc), encoding='utf-8')
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out['rank'] = out.groupby('method')['normalized_importance'].rank(method='first', ascending=False).astype(int)
+        write_figure_a1_top(out, out_dir)
+    out.to_csv(out_dir / 'global_explanation_summary.csv', index=False)
+
+
+def run_inventory(args) -> None:
+    out_root = ensure_out(args.output_root)
+    write_table_map(out_root)
+    rows = []
+    for path in sorted(out_root.rglob('*.csv')):
+        try:
+            df = pd.read_csv(path, nrows=5)
+            full_rows = sum(1 for _ in path.open(encoding='utf-8')) - 1
+            rows.append({'file': str(path.relative_to(out_root)), 'rows': max(full_rows, 0), 'columns': len(df.columns), 'column_names': ', '.join(df.columns[:20])})
+        except Exception as exc:
+            rows.append({'file': str(path.relative_to(out_root)), 'rows': '', 'columns': '', 'column_names': repr(exc)})
+    pd.DataFrame(rows).to_csv(out_root / '07_generated_table_inventory.csv', index=False)
+
+
+def rebuild_manuscript_tables(args) -> None:
+    out_root = ensure_out(args.output_root)
+    dst = ensure_out(out_root / 'manuscript_tables')
+    required = {
+        '00_data_audit.csv': 'datasets.csv',
+        '00_hyperparameter_ranges.csv': 'hyperparameter_ranges.csv',
+        '00_common_experiment_settings.csv': 'common_experiment_settings.csv',
+        '00_ga_pso_hyperparameters.csv': 'ga_pso_hyperparameters.csv',
+        '00_h_anfis_hyperparameters.csv': 'h_anfis_hyperparameters.csv',
+        '00_grs_anfis_hyperparameters.csv': 'grs_anfis_hyperparameters.csv',
+        '00_ga_pso_selected_feature_resolution.csv': 'ga_pso_selected_feature_resolution.csv',
+        '01_main_neuro_fuzzy_summary.csv': 'main_neuro_fuzzy_summary.csv',
+        '02_tabular_baseline_summary.csv': 'tabular_baseline_summary.csv',
+        '04_threshold_sensitivity_summary.csv': 'threshold_sensitivity.csv',
+        '04_sparsity_lambda_seed_summary.csv': 'sparsity_lambda_seed.csv',
+        '04_full_vs_primary_summary.csv': 'full_vs_primary_checkpoint.csv',
+        '04_schedule_summary.csv': 'sequential_vs_joint.csv',
+        '04_architecture_ablation_summary.csv': 'architecture_ablation.csv',
+        '04_product_vs_htsk_firing_summary.csv': 'product_vs_htsk_firing.csv',
+        '04_correlated_feature_stress_summary.csv': 'correlated_feature_stress.csv',
+        '07_generated_table_inventory.csv': 'table_inventory.csv',
+    }
+    missing = []
+    for src_name, dst_name in required.items():
+        src = out_root / src_name
+        if not src.exists():
+            missing.append(src_name)
+            continue
+        pd.read_csv(src).to_csv(dst / dst_name, index=False)
+    if missing:
+        raise FileNotFoundError('Missing generated direct-experiment outputs; run notebooks first: ' + ', '.join(missing))
+    write_table_map(out_root)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--task', required=True, choices=['data-audit', 'main', 'tabular-baselines', 'grs-diagnostics', 'boundary', 'interpretability', 'inventory', 'rebuild-tables', 'table-map'])
+    parser.add_argument('--datasets', nargs='*', default=None, help='Dataset keys or display names. Defaults to all four datasets.')
+    parser.add_argument('--folds', type=int, default=N_FOLDS)
+    parser.add_argument('--output-root', type=Path, default=OUT_ROOT)
+    parser.add_argument('--tau-values', nargs='*', default=['0.3', '0.4', '0.5', '0.6', '0.7'])
+    parser.add_argument('--lambda-values', nargs='*', default=['0', '0.01', '0.1'])
+    parser.add_argument('--run-stress', action='store_true', help='Also rerun correlated-feature stress diagnostics.')
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_arg_parser().parse_args(argv)
+    args.output_root = args.output_root.resolve()
+    start = time.time()
+    set_deterministic(SEED)
+    if args.task == 'data-audit':
+        run_data_audit(args)
+    elif args.task == 'main':
+        run_main(args)
+    elif args.task == 'tabular-baselines':
+        run_tabular_baselines(args)
+    elif args.task == 'grs-diagnostics':
+        run_grs_diagnostics(args)
+    elif args.task == 'boundary':
+        run_boundary(args)
+    elif args.task == 'interpretability':
+        run_interpretability(args)
+    elif args.task == 'inventory':
+        run_inventory(args)
+    elif args.task == 'rebuild-tables':
+        rebuild_manuscript_tables(args)
+    elif args.task == 'table-map':
+        write_table_map(args.output_root)
+    print(f'[{args.task}] complete in {time.time() - start:.1f}s; output_root={args.output_root}')
+
+
+if __name__ == '__main__':
+    main()
